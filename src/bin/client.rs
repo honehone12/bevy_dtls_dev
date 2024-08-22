@@ -72,28 +72,28 @@ pub struct DtlsClientConfig {
 
 #[derive(Resource)]
 pub struct DtlsClient {
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
     conn: Option<Arc<dyn Conn + Sync + Send>>
 }
 
 impl DtlsClient {
     pub fn new() -> anyhow::Result<Self> {
-        let runtime = runtime::Builder::new_multi_thread()
+        let rt = runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?; 
 
         Ok(Self{
-            runtime,
+            runtime: Arc::new(rt),
             conn: None
         })
     }
 
     pub fn build_dtls(&mut self, config: DtlsClientConfig) 
     -> anyhow::Result<()> {
-        let result = future::block_on(self.runtime.spawn(
+        let conn = future::block_on(self.runtime.spawn(
             Self::build_dtls_conn(config)
-        ))?;
-        self.conn = Some(result?);
+        ))??;
+        self.conn = Some(conn);
         Ok(())
     }
 
@@ -124,6 +124,20 @@ impl DtlsClient {
     }
 }
 
+fn send_message_system(dtls_client: Res<DtlsClient>) {
+    let conn = match dtls_client.conn {
+        Some(ref c) => c.clone(),
+        None => return
+    };
+
+    let msg = b"hellooooooon!!".to_vec();
+    if let Err(e) = future::block_on(dtls_client.runtime.spawn(async move {
+        conn.send(&msg).await
+    })) {
+        panic!("{e}");
+    }
+}
+
 pub struct DtlsClientPlugin {
     pub server_addr: &'static str,
     pub client_addr: &'static str,
@@ -145,7 +159,8 @@ impl Plugin for DtlsClientPlugin {
             panic!("{e}")
         }
 
-        app.insert_resource(dtls_client);
+        app.insert_resource(dtls_client)
+        .add_systems(Update, send_message_system);
     }
 }
 

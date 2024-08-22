@@ -23,23 +23,28 @@ pub struct DtlsServerConfig {
     pub server_names: Vec<String>
 }
 
+pub struct DtlsConn {
+    conn: Arc<dyn Conn + Sync + Send>,
+    message_handle: JoinHandle<anyhow::Result<()>>
+}
+
 #[derive(Resource)]
 pub struct DtlsServer {
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
     listener: Option<Arc<dyn Listener + Sync + Send>>,
-    conns: Arc<StdRwLock<Vec<Arc<dyn Conn + Sync + Send>>>>,
+    conns: Arc<StdRwLock<Vec<Option<DtlsConn>>>>,
     accept_handle: Option<JoinHandle<anyhow::Result<()>>>
 }
 
 impl DtlsServer {
     pub fn new() 
     -> anyhow::Result<Self> {
-        let runtime = runtime::Builder::new_multi_thread()
+        let rt = runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
 
         Ok(Self { 
-            runtime,
+            runtime: Arc::new(rt),
             listener: None, 
             conns: default(),
             accept_handle: None  
@@ -48,10 +53,10 @@ impl DtlsServer {
 
     pub fn build_dtls(&mut self, config: DtlsServerConfig) 
     -> anyhow::Result<()> {
-        let result = future::block_on(
+        let listener = future::block_on(
             self.runtime.spawn(Self::build_dtls_listener(config))
-        )?;
-        self.listener = Some(result?);
+        )??;
+        self.listener = Some(listener);
         Ok(())
     }
 
@@ -72,28 +77,61 @@ impl DtlsServer {
 
     pub fn start_accept_loop(&mut self)
     -> anyhow::Result<()> {
+        let runtime = self.runtime.clone();
         let listener = match self.listener {
             Some(ref l) => l.clone(),
             None => bail!("listener is none")
         };
         let conns = self.conns.clone();
-        let handle = self.runtime.spawn(async move {
-            loop {
-                let (conn, addr) = match listener.accept().await {
-                    Ok(ca) => ca,
-                    Err(e) => bail!(e)
-                };
-                info!("conn from {addr} accepted");
-
-                let mut w = conns.write().unwrap();
-                w.push(conn);
-            }
-
-            Ok(())
-        });
+        let handle = self.runtime.spawn(
+            Self::accept_loop(runtime, listener, conns)            
+        );
         self.accept_handle = Some(handle);
 
         Ok(())
+    }
+
+    async fn accept_loop(
+        runtime: Arc<Runtime>,
+        listener: Arc<dyn Listener + Sync + Send>,
+        conns: Arc<StdRwLock<Vec<Option<DtlsConn>>>>
+    ) -> anyhow::Result<()> {
+        loop {
+            let (conn, addr) = listener.accept().await?;
+            info!("conn from {addr} accepted");
+
+            let c = conn.clone();
+            let cs = conns.clone();
+            let mut w = conns.write().unwrap();
+            let idx = w.len();
+            let handle = runtime.spawn(Self::message_loop(idx, c, cs));
+            w.push(Some(DtlsConn{
+                conn,
+                message_handle: handle
+            }));
+        }
+    }
+
+    async fn message_loop(
+        index: usize,
+        conn: Arc<dyn Conn + Sync + Send>,
+        conns: Arc<StdRwLock<Vec<Option<DtlsConn>>>>
+    ) -> anyhow::Result<()> {
+        let mut buff = vec![0u8; 1024];
+
+        loop {
+            let (n, addr) = match conn.recv_from(&mut buff).await {
+                Ok(na) => na,
+                Err(e) => {
+                    let mut w = conns.write().unwrap();
+                    w[index] = None;
+                    bail!(e);
+                }
+            };
+
+            let msg = String::from_utf8(buff[..n].to_vec())?;
+            info!("message from {addr}: {msg}");
+        }
     }
 } 
 
