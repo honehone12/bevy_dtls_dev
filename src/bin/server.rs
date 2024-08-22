@@ -18,6 +18,11 @@ use webrtc_dtls::{
 };
 use webrtc_util::conn::{Listener, Conn};
 
+pub struct DtlsServerConfig {
+    pub listen_addr: &'static str,
+    pub server_names: Vec<String>
+}
+
 #[derive(Resource)]
 pub struct DtlsServer {
     runtime: Runtime,
@@ -41,28 +46,27 @@ impl DtlsServer {
         })
     }
 
-    pub fn build_dtls(&mut self) 
+    pub fn build_dtls(&mut self, config: DtlsServerConfig) 
     -> anyhow::Result<()> {
         let result = future::block_on(
-            self.runtime.spawn(Self::build_dtls_listener())
+            self.runtime.spawn(Self::build_dtls_listener(config))
         )?;
         self.listener = Some(result?);
         Ok(())
     }
 
-    async fn build_dtls_listener()
+    async fn build_dtls_listener(config: DtlsServerConfig)
     -> anyhow::Result<Arc<dyn Listener + Sync + Send>> {
-        let laddr = "127.0.0.1:4443";
-        let names = vec!["localhost".to_string()];
-        let cert = Certificate::generate_self_signed(names)?;
-        let config = Config{
-            certificates: vec![cert],
-            extended_master_secret: ExtendedMasterSecretType::Require,
-            ..default()
-        };
-
-        let listener = listener::listen(laddr, config).await?;
-        info!("listening at {laddr}");
+        let cert = Certificate::generate_self_signed(config.server_names)?;
+        let listener = listener::listen(
+            config.listen_addr, 
+            Config{
+                certificates: vec![cert],
+                extended_master_secret: ExtendedMasterSecretType::Require,
+                ..default()
+            }
+        ).await?;
+        info!("listening at {}", config.listen_addr);
         Ok(Arc::new(listener))
     }
 
@@ -93,7 +97,10 @@ impl DtlsServer {
     }
 } 
 
-pub struct DtlsServerPlugin;
+pub struct DtlsServerPlugin {
+    pub listen_addr: &'static str,
+    pub server_name: &'static str
+}
 
 impl Plugin for DtlsServerPlugin {
     fn build(&self, app: &mut App) {
@@ -101,12 +108,17 @@ impl Plugin for DtlsServerPlugin {
             Ok(s) => s,
             Err(e) => panic!("{e}")
         };
-        if let Err(e) = dtls_server.build_dtls() {
+
+        if let Err(e) = dtls_server.build_dtls(DtlsServerConfig{
+            listen_addr: self.listen_addr,
+            server_names: vec![self.server_name.to_string()]
+        }) {
             panic!("{e}");
         }
         if let Err(e) = dtls_server.start_accept_loop() {
             panic!("{e}");
         }
+
         app.insert_resource(dtls_server);
     }
 }
@@ -121,7 +133,10 @@ fn main() {
             level: Level::INFO,
             ..default()
         },
-        DtlsServerPlugin
+        DtlsServerPlugin{
+            listen_addr: "127.0.0.1:4443",
+            server_name: "localhost"
+        }
     ))
     .run();
 }

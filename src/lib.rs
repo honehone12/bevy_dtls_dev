@@ -3,6 +3,6 @@
 mod tests {
     #[test]
     fn it_works() {
-        panic!();
+        panic!("panic!");
     }
 }

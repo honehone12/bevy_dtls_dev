@@ -64,6 +64,12 @@ impl Plugin for ClientGraphicsPlugin {
     }
 }
 
+pub struct DtlsClientConfig {
+    pub server_addr: &'static str,
+    pub client_addr: &'static str,
+    pub server_name: &'static str
+}
+
 #[derive(Resource)]
 pub struct DtlsClient {
     runtime: Runtime,
@@ -75,42 +81,40 @@ impl DtlsClient {
         let runtime = runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?; 
+
         Ok(Self{
             runtime,
             conn: None
         })
     }
 
-    pub fn build_dtls(&mut self) -> anyhow::Result<()> {
+    pub fn build_dtls(&mut self, config: DtlsClientConfig) 
+    -> anyhow::Result<()> {
         let result = future::block_on(self.runtime.spawn(
-            Self::build_dtls_conn()
+            Self::build_dtls_conn(config)
         ))?;
         self.conn = Some(result?);
         Ok(())
     }
 
-    async fn build_dtls_conn() 
+    async fn build_dtls_conn(config: DtlsClientConfig) 
     -> anyhow::Result<Arc<impl Conn + Sync + Send>> {
-        let server_addr = "127.0.0.1:4443";
-        let client_addr = "127.0.0.1:0";
-        let socket = TokioUdpSocket::bind(client_addr).await?;
-        socket.connect(server_addr).await?;
-        info!("connecting to {server_addr}");
+        let socket = TokioUdpSocket::bind(config.client_addr).await?;
+        socket.connect(config.server_addr).await?;
+        info!("connecting to {}", config.server_addr);
 
-        let server_name = "localhost".to_string();
         let certificate = Certificate::generate_self_signed(vec![
-            server_name.clone()
+            config.server_name.to_string()
         ])?;
-        let config = Config{
-            certificates: vec![certificate],
-            insecure_skip_verify: true,
-            extended_master_secret: ExtendedMasterSecretType::Require,
-            server_name,
-            ..default()
-        };
         let dtls_conn = DTLSConn::new(
             Arc::new(socket), 
-            config, 
+            Config{
+                certificates: vec![certificate],
+                insecure_skip_verify: true,
+                extended_master_secret: ExtendedMasterSecretType::Require,
+                server_name: config.server_name.to_string(),
+                ..default()
+            }, 
             true, 
             None
         ).await?;
@@ -120,7 +124,11 @@ impl DtlsClient {
     }
 }
 
-pub struct DtlsClientPlugin;
+pub struct DtlsClientPlugin {
+    pub server_addr: &'static str,
+    pub client_addr: &'static str,
+    pub server_name: &'static str
+}
 
 impl Plugin for DtlsClientPlugin {
     fn build(&self, app: &mut App) {
@@ -129,7 +137,11 @@ impl Plugin for DtlsClientPlugin {
             Err(e) => panic!("{e}")
         };
 
-        if let Err(e) = dtls_client.build_dtls() {
+        if let Err(e) = dtls_client.build_dtls(DtlsClientConfig{ 
+            server_addr: self.server_addr, 
+            client_addr: self.client_addr, 
+            server_name: self.server_name 
+        }) {
             panic!("{e}")
         }
 
@@ -146,7 +158,11 @@ async fn main() {
             ..default()
         }),
         ClientGraphicsPlugin,
-        DtlsClientPlugin
+        DtlsClientPlugin{
+            server_addr: "127.0.0.1:4443",
+            client_addr: "127.0.0.1:0",
+            server_name: "localhost"
+        }
     ))
     .run();
 }
