@@ -25,7 +25,7 @@ pub struct DtlsServerConfig {
 
 pub struct DtlsConn {
     conn: Arc<dyn Conn + Sync + Send>,
-    message_handle: JoinHandle<anyhow::Result<()>>
+    recv_handle: JoinHandle<anyhow::Result<()>>
 }
 
 #[derive(Resource)]
@@ -104,15 +104,15 @@ impl DtlsServer {
             let cs = conns.clone();
             let mut w = conns.write().unwrap();
             let idx = w.len();
-            let handle = runtime.spawn(Self::message_loop(idx, c, cs));
+            let handle = runtime.spawn(Self::recv_loop(idx, c, cs));
             w.push(Some(DtlsConn{
                 conn,
-                message_handle: handle
+                recv_handle: handle
             }));
         }
     }
 
-    async fn message_loop(
+    async fn recv_loop(
         index: usize,
         conn: Arc<dyn Conn + Sync + Send>,
         conns: Arc<StdRwLock<Vec<Option<DtlsConn>>>>

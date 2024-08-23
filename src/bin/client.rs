@@ -1,12 +1,15 @@
-use std::sync::Arc;
+use std::{sync::{mpsc as std_mpsc, Arc}};
+use anyhow::bail;
 use bevy::{
     log::{Level, LogPlugin}, 
     prelude::*, 
     tasks::futures_lite::future
 };
+use bytes::Bytes;
 use tokio::{
     net::UdpSocket as TokioUdpSocket, 
-    runtime::{self, Runtime}
+    runtime::{self, Runtime},
+    sync::mpsc as tokio_mpsc, task::JoinHandle
 };
 use webrtc_dtls::{
     config::{Config, ExtendedMasterSecretType}, 
@@ -73,7 +76,9 @@ pub struct DtlsClientConfig {
 #[derive(Resource)]
 pub struct DtlsClient {
     runtime: Arc<Runtime>,
-    conn: Option<Arc<dyn Conn + Sync + Send>>
+    conn: Option<Arc<dyn Conn + Sync + Send>>,
+    send_tx: Option<tokio_mpsc::UnboundedSender<Bytes>>,
+    send_handle: Option<JoinHandle<anyhow::Result<()>>>
 }
 
 impl DtlsClient {
@@ -84,7 +89,9 @@ impl DtlsClient {
 
         Ok(Self{
             runtime: Arc::new(rt),
-            conn: None
+            conn: None,
+            send_tx: None,
+            send_handle: None
         })
     }
 
@@ -122,18 +129,52 @@ impl DtlsClient {
         info!("connected");
         Ok(Arc::new(dtls_conn))
     }
+
+    pub fn start_send_loop(&mut self) -> anyhow::Result<()> {
+        if self.send_tx.is_some() {
+            bail!("send tx is already some");
+        }
+
+        let (send_tx, send_rx) = tokio_mpsc::unbounded_channel::<Bytes>();
+        self.send_tx = Some(send_tx);
+        let c = match self.conn {
+            Some(ref c) => c.clone(),
+            None => bail!("conn is none")
+        };
+        let handle = self.runtime.spawn(Self::send_loop(send_rx, c));
+        self.send_handle = Some(handle);
+
+        Ok(())
+    }
+
+    async fn send_loop(
+        mut send_rx: tokio_mpsc::UnboundedReceiver<Bytes>,
+        conn: Arc<dyn Conn + Sync + Send>
+    )-> anyhow::Result<()> {
+        loop {
+            let Some(msg) = send_rx.recv().await else {
+                break;
+            };
+
+            conn.send(&msg).await?;
+        }
+
+        Ok(())
+    }
+
+    pub fn send(&self, message: Bytes) -> anyhow::Result<()> {
+        let Some(ref tx) = self.send_tx else {
+            bail!("send tx is None");
+        };
+
+        tx.send(message)?;
+        Ok(())
+    }
 }
 
-fn send_message_system(dtls_client: Res<DtlsClient>) {
-    let conn = match dtls_client.conn {
-        Some(ref c) => c.clone(),
-        None => return
-    };
-
-    let msg = b"hellooooooon!!".to_vec();
-    if let Err(e) = future::block_on(dtls_client.runtime.spawn(async move {
-        conn.send(&msg).await
-    })) {
+fn send_helooon_system(dtls_client: Res<DtlsClient>) {
+    let msg = Bytes::from_static(b"helloooooon!!");
+    if let Err(e) = dtls_client.send(msg) {
         panic!("{e}");
     }
 }
@@ -158,14 +199,16 @@ impl Plugin for DtlsClientPlugin {
         }) {
             panic!("{e}")
         }
+        if let Err(e) = dtls_client.start_send_loop() {
+            panic!("{e}");
+        } 
 
         app.insert_resource(dtls_client)
-        .add_systems(Update, send_message_system);
+        .add_systems(Update, send_helooon_system);
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     App::new()
     .add_plugins((
         DefaultPlugins.set(LogPlugin{
