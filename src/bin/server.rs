@@ -17,6 +17,12 @@ use webrtc_dtls::{
     crypto::Certificate, listener,
 };
 use webrtc_util::conn::{Listener, Conn};
+use bytes::{Bytes, BytesMut};
+use crossbeam::channel::{
+    unbounded as crossbeam_channel, Receiver as CrossbeamRx, Sender as CrossbeamTx, TryRecvError
+};
+
+const BUF_SIZE: usize = 1024;
 
 pub struct DtlsServerConfig {
     pub listen_addr: &'static str,
@@ -25,15 +31,20 @@ pub struct DtlsServerConfig {
 
 pub struct DtlsConn {
     conn: Arc<dyn Conn + Sync + Send>,
-    recv_handle: JoinHandle<anyhow::Result<()>>
+    recv_rx: Option<CrossbeamRx<Bytes>>, 
+    recv_handle: Option<JoinHandle<anyhow::Result<()>>>
 }
+
+pub struct AcceptedConn(usize);
 
 #[derive(Resource)]
 pub struct DtlsServer {
     runtime: Arc<Runtime>,
     listener: Option<Arc<dyn Listener + Sync + Send>>,
     conns: Arc<StdRwLock<Vec<Option<DtlsConn>>>>,
-    accept_handle: Option<JoinHandle<anyhow::Result<()>>>
+    accept_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    accept_rx: Option<CrossbeamRx<AcceptedConn>>,
+    recv_buf_size: usize
 }
 
 impl DtlsServer {
@@ -47,7 +58,10 @@ impl DtlsServer {
             runtime: Arc::new(rt),
             listener: None, 
             conns: default(),
-            accept_handle: None  
+            accept_handle: None,
+            accept_rx: None,
+            recv_buf_size: BUF_SIZE
+
         })
     }
 
@@ -77,63 +91,123 @@ impl DtlsServer {
 
     pub fn start_accept_loop(&mut self)
     -> anyhow::Result<()> {
-        let runtime = self.runtime.clone();
         let listener = match self.listener {
             Some(ref l) => l.clone(),
             None => bail!("listener is none")
         };
         let conns = self.conns.clone();
+        let (accept_tx, accept_rx) = crossbeam_channel::<AcceptedConn>();
         let handle = self.runtime.spawn(
-            Self::accept_loop(runtime, listener, conns)            
+            Self::accept_loop(listener, conns, accept_tx)            
         );
+        
         self.accept_handle = Some(handle);
-
+        self.accept_rx = Some(accept_rx);
         Ok(())
     }
 
     async fn accept_loop(
-        runtime: Arc<Runtime>,
         listener: Arc<dyn Listener + Sync + Send>,
-        conns: Arc<StdRwLock<Vec<Option<DtlsConn>>>>
+        conns: Arc<StdRwLock<Vec<Option<DtlsConn>>>>,
+        accepted_tx: CrossbeamTx<AcceptedConn>
     ) -> anyhow::Result<()> {
         loop {
             let (conn, addr) = listener.accept().await?;
             info!("conn from {addr} accepted");
 
-            let c = conn.clone();
-            let cs = conns.clone();
             let mut w = conns.write().unwrap();
             let idx = w.len();
-            let handle = runtime.spawn(Self::recv_loop(idx, c, cs));
             w.push(Some(DtlsConn{
                 conn,
-                recv_handle: handle
+                recv_rx: None,
+                recv_handle: None,
             }));
+            accepted_tx.send(AcceptedConn(idx))?;
         }
+    }
+
+    pub fn start_recv_loop(
+        &self, 
+        accepted_conn: AcceptedConn,
+        recv_chan: (CrossbeamTx<Bytes>, CrossbeamRx<Bytes>)
+    )-> anyhow::Result<()> {
+        let idx = accepted_conn.0;
+        let (recv_tx, recv_rx) = recv_chan;
+        let mut w = self.conns.write().unwrap();
+        let dtls_conn = match w[idx] {
+            None => bail!("dtls conn is None"),
+            Some(ref mut c) => c
+        };
+        dtls_conn.recv_rx = Some(recv_rx);
+        let conn = dtls_conn.conn.clone();
+        let handle = self.runtime.spawn(Self::recv_loop(
+            conn,
+            recv_tx,
+            self.recv_buf_size
+        ));
+        dtls_conn.recv_handle = Some(handle);
+        
+        Ok(())
     }
 
     async fn recv_loop(
-        index: usize,
         conn: Arc<dyn Conn + Sync + Send>,
-        conns: Arc<StdRwLock<Vec<Option<DtlsConn>>>>
+        recv_tx: CrossbeamTx<Bytes>, 
+        buf_size: usize
     ) -> anyhow::Result<()> {
-        let mut buff = vec![0u8; 1024];
+        let mut buf = BytesMut::zeroed(buf_size);
 
         loop {
-            let (n, addr) = match conn.recv_from(&mut buff).await {
-                Ok(na) => na,
-                Err(e) => {
-                    let mut w = conns.write().unwrap();
-                    w[index] = None;
-                    bail!(e);
-                }
-            };
+            let (n, addr) = conn.recv_from(&mut buf).await?;
+            let recved = buf.split_to(n)
+            .freeze();
+            recv_tx.send(recved)?;
 
-            let msg = String::from_utf8(buff[..n].to_vec())?;
-            info!("message from {addr}: {msg}");
+            buf.resize(buf_size, 0);
+            info!("received {n}bytes from {addr}");
         }
     }
 } 
+
+fn accept_system(dtls_server: Res<DtlsServer>) {
+    let accept_rx = match dtls_server.accept_rx {
+        Some(ref rx) => rx,
+        None => panic!("accept rx is none")
+    };
+    let accepted = match accept_rx.try_recv() {
+        Ok(a) => a,
+        Err(TryRecvError::Empty) => return,
+        Err(e) => panic!("{e}") 
+    };
+
+    let recv_chan = crossbeam_channel::<Bytes>();
+    if let Err(e) = dtls_server.start_recv_loop(accepted, recv_chan) {
+        panic!("{e}");
+    }
+}
+
+fn recv_system(dtls_server: Res<DtlsServer>) {
+    let r = dtls_server.conns.read().unwrap();
+    for (idx, op_conn) in r.iter()
+    .enumerate() {
+        let Some(ref conn) = op_conn else {
+            continue;
+        };
+
+        let Some(ref recv_rx) = conn.recv_rx else {
+            continue;
+        };
+
+        let raw = match recv_rx.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => continue,
+            Err(e) => panic!("{e}")
+        };
+
+        let msg = String::from_utf8(raw.to_vec()).unwrap();
+        info!("message from conn: {idx}, {msg}")
+    }
+}
 
 pub struct DtlsServerPlugin {
     pub listen_addr: &'static str,
@@ -157,7 +231,11 @@ impl Plugin for DtlsServerPlugin {
             panic!("{e}");
         }
 
-        app.insert_resource(dtls_server);
+        app.insert_resource(dtls_server)
+        .add_systems(Update, (
+            accept_system,
+            recv_system
+        ));
     }
 }
 

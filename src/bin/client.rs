@@ -1,4 +1,4 @@
-use std::{sync::{mpsc as std_mpsc, Arc}};
+use std::sync::Arc;
 use anyhow::bail;
 use bevy::{
     log::{Level, LogPlugin}, 
@@ -9,7 +9,12 @@ use bytes::Bytes;
 use tokio::{
     net::UdpSocket as TokioUdpSocket, 
     runtime::{self, Runtime},
-    sync::mpsc as tokio_mpsc, task::JoinHandle
+    sync::mpsc::{
+        unbounded_channel as tokio_channel, 
+        UnboundedSender as TokioTx,
+        UnboundedReceiver as TokioRx
+    }, 
+    task::JoinHandle
 };
 use webrtc_dtls::{
     config::{Config, ExtendedMasterSecretType}, 
@@ -77,7 +82,7 @@ pub struct DtlsClientConfig {
 pub struct DtlsClient {
     runtime: Arc<Runtime>,
     conn: Option<Arc<dyn Conn + Sync + Send>>,
-    send_tx: Option<tokio_mpsc::UnboundedSender<Bytes>>,
+    send_tx: Option<TokioTx<Bytes>>,
     send_handle: Option<JoinHandle<anyhow::Result<()>>>
 }
 
@@ -135,7 +140,7 @@ impl DtlsClient {
             bail!("send tx is already some");
         }
 
-        let (send_tx, send_rx) = tokio_mpsc::unbounded_channel::<Bytes>();
+        let (send_tx, send_rx) = tokio_channel::<Bytes>();
         self.send_tx = Some(send_tx);
         let c = match self.conn {
             Some(ref c) => c.clone(),
@@ -148,7 +153,7 @@ impl DtlsClient {
     }
 
     async fn send_loop(
-        mut send_rx: tokio_mpsc::UnboundedReceiver<Bytes>,
+        mut send_rx: TokioRx<Bytes>,
         conn: Arc<dyn Conn + Sync + Send>
     )-> anyhow::Result<()> {
         loop {
