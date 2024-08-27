@@ -28,60 +28,71 @@ pub struct DtlsClientConfig {
     pub server_name: &'static str
 }
 
+pub struct DtlsClientHealth {
+    pub sender: Option<anyhow::Result<()>>,
+    pub recver: Option<anyhow::Result<()>>
+}
+
 #[derive(Resource)]
 pub struct DtlsClient {
     runtime: Arc<Runtime>,
     conn: Option<Arc<dyn Conn + Sync + Send>>,
 
-    send_tx: TokioTx<Bytes>,
+    send_tx: Option<TokioTx<Bytes>>,
     send_handle: Option<JoinHandle<anyhow::Result<()>>>
 }
 
 impl DtlsClient {
-    pub fn new() -> anyhow::Result<(Self, TokioRx<Bytes>)> {
+    pub fn new() -> anyhow::Result<Self> {
         let rt = runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?; 
 
-        let (send_tx, send_rx) = tokio_channel::<Bytes>();
-
-        Ok((Self{
+        Ok(Self{
             runtime: Arc::new(rt),
             conn: None,
-            send_tx,
+            send_tx: None,
             send_handle: None
-        }, send_rx))
+        })
     }
 
     pub fn send(&self, message: Bytes) -> anyhow::Result<()> {
-        self.send_tx.send(message)?;
+        let send_tx = match self.send_tx {
+            Some(ref tx) => tx,
+            None => bail!("send tx is None")
+        };
+        
+        send_tx.send(message)?;
         Ok(())
     }
 
-    pub fn health_check(&mut self) -> Option<anyhow::Result<()>> {
-        if self.send_handle.is_none() {
-            return None;
+    pub fn health_check(&mut self) -> DtlsClientHealth {
+        DtlsClientHealth{
+            sender: self.sender_health_check(),
+            recver: None
         }
+    }
 
-        let handle_ref = self.send_handle.as_ref().unwrap();
+    pub(super) fn sender_health_check(&mut self) 
+    -> Option<anyhow::Result<()>> {
+        let handle_ref = self.send_handle.as_ref()?;
+
         if !handle_ref.is_finished() {
             return None;
         }
 
-        let handle = self.send_handle.take().unwrap();
+        let handle = self.send_handle.take()
+        .unwrap();
         match future::block_on(handle) {
             Ok(r) => Some(r),
             Err(e) => Some(Err(anyhow!(e)))
         }
     }
 
-    pub fn start(
-        &mut self, 
-        config: DtlsClientConfig,
-        send_rx: TokioRx<Bytes>
-    ) -> anyhow::Result<()> {
+    pub fn start(&mut self, config: DtlsClientConfig) 
+    -> anyhow::Result<()> {
         self.start_connect(config)?;
-        self.start_send_loop(send_rx)
+        self.start_send_loop()
     }
 
     pub(super) fn start_connect(&mut self, config: DtlsClientConfig) 
@@ -119,12 +130,15 @@ impl DtlsClient {
         Ok(Arc::new(dtls_conn))
     }
 
-    pub(super) fn start_send_loop(&mut self, send_rx: TokioRx<Bytes>) 
+    pub(super) fn start_send_loop(&mut self) 
     -> anyhow::Result<()> {
         let c = match self.conn {
             Some(ref c) => c.clone(),
             None => bail!("conn is none")
         };
+
+        let (send_tx, send_rx) = tokio_channel::<Bytes>();
+        self.send_tx = Some(send_tx);
         let handle = self.runtime.spawn(Self::send_loop(send_rx, c));
         self.send_handle = Some(handle);
 

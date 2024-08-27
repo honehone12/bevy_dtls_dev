@@ -10,7 +10,7 @@ use bevy_dtls_dev::server::{
 };
 use crossbeam::channel::TryRecvError;
 
-fn recv_system(dtls_server: Res<DtlsServer>) {
+fn recv_and_print_system(dtls_server: Res<DtlsServer>) {
     loop {
         let (idx, raw) = match dtls_server.try_recv() {
             Ok(ir) => ir,
@@ -20,6 +20,19 @@ fn recv_system(dtls_server: Res<DtlsServer>) {
 
         let msg = String::from_utf8(raw.to_vec()).unwrap();
         info!("message from conn: {}, {msg}", idx.index());
+    }
+}
+
+fn health_check_system(mut dtls_server: ResMut<DtlsServer>) {
+    let health = dtls_server.health_check();
+    if let Some(Err(e)) = health.listener {
+        panic!("{e}");
+    }
+    if let Some((idx, Err(e))) = health.sender.get(0) {
+        panic!("conn index {idx}: {e}");
+    }
+    if let Some((idx, Err(e))) = health.recver.get(0) {
+        panic!("conn index {idx}: {e}");
     }
 }
 
@@ -39,7 +52,10 @@ fn main() {
             buf_size: 512
         }
     ))
-    .add_systems(Update, recv_system)
+    .add_systems(Update, (
+        recv_and_print_system,
+        health_check_system
+    ))
     .run();
 }
 

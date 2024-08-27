@@ -2,7 +2,7 @@ use std::{
     collections::HashMap, 
     sync::{Arc, RwLock as StdRwLock}
 };
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use bevy::{
     prelude::*, 
     tasks::futures_lite::future, 
@@ -26,6 +26,12 @@ use crossbeam::channel::{
 pub struct DtlsServerConfig {
     pub listen_addr: &'static str,
     pub server_names: Vec<String>
+}
+
+pub struct DtlsServerHealth {
+    pub listener: Option<anyhow::Result<()>>,
+    pub sender: Vec<(usize, anyhow::Result<()>)>,
+    pub recver: Vec<(usize, anyhow::Result<()>)>
 }
 
 #[derive(Clone, Copy)]
@@ -82,6 +88,61 @@ impl DtlsServer {
 
     pub fn try_recv(&self) -> Result<(ConnIndex, Bytes), TryRecvError> {
         self.recv_rx.try_recv()
+    }
+
+    pub fn health_check(&mut self) -> DtlsServerHealth {
+        DtlsServerHealth{
+            listener: self.listener_health_check(),
+            sender: vec![],
+            recver: self.recver_health_check()
+        }
+    }
+
+    pub(super) fn listener_health_check(&mut self) 
+    -> Option<anyhow::Result<()>> {
+        let handle_ref = self.accept_handle.as_ref()?;
+
+        if !handle_ref.is_finished() {
+            return None;
+        }
+
+        let handle = self.accept_handle.take()?;
+        match future::block_on(handle) {
+            Ok(r) => Some(r),
+            Err(e) => Some(Err(anyhow!(e)))
+        }
+    }
+
+    pub(super) fn recver_health_check(&mut self)
+    -> Vec<(usize, anyhow::Result<()>)> {
+        let finished = {
+            let mut v = vec![];
+            let mut w = self.conn_map.write().unwrap();
+            for (idx, dtls_conn) in w.iter_mut() {
+                let Some(ref handle_ref) = dtls_conn.recv_handle else {
+                    continue;
+                };
+                
+                if !handle_ref.is_finished() {
+                    continue;
+                }
+
+                let handle = dtls_conn.recv_handle.take()
+                .unwrap();
+                v.push((*idx, handle));
+            }
+            v
+        };
+
+        let mut results = vec![];
+        for (idx, handle) in finished {
+            let r = match future::block_on(handle) {
+                Ok(r) => r,
+                Err(e) => Err(anyhow!(e))
+            };
+            results.push((idx, r));
+        }
+        results
     }
 
     pub fn start(&mut self, config: DtlsServerConfig)

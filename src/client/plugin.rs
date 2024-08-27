@@ -9,7 +9,7 @@ pub struct DtlsClientPlugin {
 
 impl Plugin for DtlsClientPlugin {
     fn build(&self, app: &mut App) {
-        let(mut dtls_client, rx) = match DtlsClient::new() {
+        let mut dtls_client = match DtlsClient::new() {
             Ok(c) => c,
             Err(e) => panic!("{e}")
         };
@@ -18,7 +18,7 @@ impl Plugin for DtlsClientPlugin {
             server_addr: self.server_addr, 
             client_addr: self.client_addr, 
             server_name: self.server_name 
-        }, rx) {
+        }) {
             panic!("{e}")
         }
 
