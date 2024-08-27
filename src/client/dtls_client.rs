@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use bevy::{
     prelude::*, 
     tasks::futures_lite::future
@@ -56,6 +56,23 @@ impl DtlsClient {
     pub fn send(&self, message: Bytes) -> anyhow::Result<()> {
         self.send_tx.send(message)?;
         Ok(())
+    }
+
+    pub fn health_check(&mut self) -> Option<anyhow::Result<()>> {
+        if self.send_handle.is_none() {
+            return None;
+        }
+
+        let handle_ref = self.send_handle.as_ref().unwrap();
+        if !handle_ref.is_finished() {
+            return None;
+        }
+
+        let handle = self.send_handle.take().unwrap();
+        match future::block_on(handle) {
+            Ok(r) => Some(r),
+            Err(e) => Some(Err(anyhow!(e)))
+        }
     }
 
     pub fn start(

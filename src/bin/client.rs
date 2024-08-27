@@ -64,6 +64,15 @@ fn send_helooon_system(dtls_client: Res<DtlsClient>) {
     }
 }
 
+fn health_check_system(mut dtls_client: ResMut<DtlsClient>) {
+    let Some(result) = dtls_client.health_check() else {
+        return;
+    };
+
+    if let Err(e) = result {
+        panic!("{e}")
+    }
+}
 
 fn main() {
     App::new()
@@ -79,6 +88,9 @@ fn main() {
             server_name: "localhost"
         }
     ))
-    .add_systems(Update, send_helooon_system)
+    .add_systems(Update, (
+        send_helooon_system,
+        health_check_system
+    ))
     .run();
 }
