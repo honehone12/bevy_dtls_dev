@@ -33,12 +33,16 @@ pub struct DtlsClientHealth {
     pub recver: Option<anyhow::Result<()>>
 }
 
+struct DtlsClientClose;
+
+
 #[derive(Resource)]
 pub struct DtlsClient {
     runtime: Arc<Runtime>,
     conn: Option<Arc<dyn Conn + Sync + Send>>,
 
     send_tx: Option<TokioTx<Bytes>>,
+    close_send_tx: Option<TokioTx<DtlsClientClose>>,
     send_handle: Option<JoinHandle<anyhow::Result<()>>>
 }
 
@@ -52,8 +56,23 @@ impl DtlsClient {
             runtime: Arc::new(rt),
             conn: None,
             send_tx: None,
+            close_send_tx: None,
             send_handle: None
         })
+    }
+
+    pub fn close(&mut self) {
+        let Some(ref close_send_tx) = self.close_send_tx else {
+            return;
+        };
+
+        if let Err(e) = close_send_tx.send(DtlsClientClose) {
+            error!("error on closing channel: {e}");
+        }
+
+        self.send_tx = None;
+        self.close_send_tx = None;
+        self.conn = None;
     }
 
     pub fn send(&self, message: Bytes) -> anyhow::Result<()> {
@@ -61,7 +80,7 @@ impl DtlsClient {
             Some(ref tx) => tx,
             None => bail!("send tx is None")
         };
-        
+
         send_tx.send(message)?;
         Ok(())
     }
@@ -138,8 +157,12 @@ impl DtlsClient {
         };
 
         let (send_tx, send_rx) = tokio_channel::<Bytes>();
+        let(close_send_tx, close_send_rx) = tokio_channel::<DtlsClientClose>();
         self.send_tx = Some(send_tx);
-        let handle = self.runtime.spawn(Self::send_loop(send_rx, c));
+        self.close_send_tx = Some(close_send_tx);
+        let handle = self.runtime.spawn(
+            Self::send_loop(send_rx, close_send_rx, c)
+        );
         self.send_handle = Some(handle);
 
         Ok(())
@@ -147,16 +170,26 @@ impl DtlsClient {
 
     async fn send_loop(
         mut send_rx: TokioRx<Bytes>,
+        mut close_send_rx: TokioRx<DtlsClientClose>,
         conn: Arc<dyn Conn + Sync + Send>
     )-> anyhow::Result<()> {
         loop {
-            let Some(msg) = send_rx.recv().await else {
-                break;
-            };
+            tokio::select! {
+                biased;
 
-            conn.send(&msg).await?;
+                Some(msg) = send_rx.recv() => {
+                    conn.send(&msg).await?;
+                }
+                Some(_) = close_send_rx.recv() => break,
+                else => {
+                    warn!("tx is dropped before rx is closed");
+                    break;
+                }
+            }
         }
 
+        conn.close().await?;
+        info!("dtls client sender is closed");
         Ok(())
     }
 }

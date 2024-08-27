@@ -9,7 +9,7 @@ use bevy_dtls_dev::client::{
 };
 
 #[derive(Component)]
-pub struct RollingBox;
+struct RollingBox;
 
 fn setup_graphics(
     mut commands: Commands,
@@ -48,7 +48,7 @@ fn graphics_system(
     }
 }
 
-pub struct ClientGraphicsPlugin;
+struct ClientGraphicsPlugin;
 
 impl Plugin for ClientGraphicsPlugin {
     fn build(&self, app: &mut App) {
@@ -57,11 +57,24 @@ impl Plugin for ClientGraphicsPlugin {
     }
 }
 
-fn send_helooon_system(dtls_client: Res<DtlsClient>) {
+#[derive(Resource)]
+struct HeloonCounter(pub usize);
+
+fn send_helooon_system(
+    mut dtls_client: ResMut<DtlsClient>, 
+    mut counter: ResMut<HeloonCounter>
+) {
+    if counter.0 > 10 {
+        dtls_client.close();
+        return;
+    }
+
     let msg = Bytes::from_static(b"helloooooon!!");
     if let Err(e) = dtls_client.send(msg) {
         panic!("{e}");
     }
+
+    counter.0 += 1;
 }
 
 fn health_check_system(mut dtls_client: ResMut<DtlsClient>) {
@@ -88,6 +101,7 @@ fn main() {
             server_name: "localhost"
         }
     ))
+    .insert_resource(HeloonCounter(0))
     .add_systems(Update, (
         send_helooon_system,
         health_check_system

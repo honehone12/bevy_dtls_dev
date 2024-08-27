@@ -29,10 +29,10 @@ fn health_check_system(mut dtls_server: ResMut<DtlsServer>) {
         panic!("{e}");
     }
     if let Some((idx, Err(e))) = health.sender.get(0) {
-        panic!("conn index {idx}: {e}");
+        error!("conn index {idx}: {e}");
     }
     if let Some((idx, Err(e))) = health.recver.get(0) {
-        panic!("conn index {idx}: {e}");
+        error!("conn index {idx}: {e}");
     }
 }
 
