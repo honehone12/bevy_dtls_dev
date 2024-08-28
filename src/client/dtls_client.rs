@@ -8,6 +8,7 @@ use bytes::Bytes;
 use tokio::{
     net::UdpSocket as TokioUdpSocket, 
     runtime::{self, Runtime},
+    select,
     sync::mpsc::{
         unbounded_channel as tokio_channel, 
         UnboundedSender as TokioTx,
@@ -34,7 +35,6 @@ pub struct DtlsClientHealth {
 }
 
 struct DtlsClientClose;
-
 
 #[derive(Resource)]
 pub struct DtlsClient {
@@ -67,11 +67,11 @@ impl DtlsClient {
         };
 
         if let Err(e) = close_send_tx.send(DtlsClientClose) {
-            error!("error on closing channel: {e}");
+            error!("close send tx is closed before set to None: {e}");
         }
 
-        self.send_tx = None;
         self.close_send_tx = None;
+        self.send_tx = None;
         self.conn = None;
     }
 
@@ -81,7 +81,10 @@ impl DtlsClient {
             None => bail!("send tx is None")
         };
 
-        send_tx.send(message)?;
+        if send_tx.send(message)
+        .is_err() {
+            bail!("client conn is not started or disconnected");
+        }
         Ok(())
     }
 
@@ -127,7 +130,7 @@ impl DtlsClient {
     -> anyhow::Result<Arc<impl Conn + Sync + Send>> {
         let socket = TokioUdpSocket::bind(config.client_addr).await?;
         socket.connect(config.server_addr).await?;
-        info!("connecting to {}", config.server_addr);
+        debug!("dtls client connecting to {}", config.server_addr);
 
         let certificate = Certificate::generate_self_signed(vec![
             config.server_name.to_string()
@@ -145,7 +148,7 @@ impl DtlsClient {
             None
         ).await?;
 
-        info!("connected");
+        debug!("connected");
         Ok(Arc::new(dtls_conn))
     }
 
@@ -158,9 +161,10 @@ impl DtlsClient {
 
         let (send_tx, send_rx) = tokio_channel::<Bytes>();
         let(close_send_tx, close_send_rx) = tokio_channel::<DtlsClientClose>();
+
         self.send_tx = Some(send_tx);
         self.close_send_tx = Some(close_send_tx);
-        
+
         let handle = self.runtime.spawn(
             Self::send_loop(c, send_rx, close_send_rx)
         );
@@ -175,25 +179,22 @@ impl DtlsClient {
         mut close_send_rx: TokioRx<DtlsClientClose>
     )-> anyhow::Result<()> {
         loop {
-            tokio::select! {
+            select! {
                 biased;
 
                 Some(msg) = send_rx.recv() => {
                     conn.send(&msg).await?;
                 }
-                Some(_) = close_send_rx.recv() => {
-                    info!("closing client sender");
-                    break;
-                },
+                Some(_) = close_send_rx.recv() => break,
                 else => {
-                    warn!("tx is dropped before rx is closed");
+                    warn!("close send tx is dropped before rx is closed");
                     break;
                 }
             }
         }
 
         conn.close().await?;
-        info!("dtls client sender is closed");
+        debug!("dtls client sender is closed");
         Ok(())
     }
 }

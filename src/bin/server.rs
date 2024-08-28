@@ -8,18 +8,26 @@ use bevy_dtls_dev::server::{
     dtls_server::DtlsServer,
     plugin::DtlsServerPlugin
 };
-use tokio::sync::mpsc::error::TryRecvError;
 
-fn recv_and_print_system(mut dtls_server: ResMut<DtlsServer>) {
+#[derive(Resource)]
+struct ServerHellooonCounter(pub usize);
+
+fn recv_hellooon_system(
+    mut dtls_server: ResMut<DtlsServer>,
+    mut counter: ResMut<ServerHellooonCounter>
+) {
     loop {
-        let (idx, raw) = match dtls_server.try_recv() {
-            Ok(ir) => ir,
-            Err(TryRecvError::Empty) => break,
-            Err(e) => panic!("{e}")
+        let Some((idx, raw)) = dtls_server.recv() else {
+            return;
         };
 
         let msg = String::from_utf8(raw.to_vec()).unwrap();
         info!("message from conn: {}, {msg}", idx.index());
+        counter.0 += 1;
+
+        if counter.0 >= 10 {
+            dtls_server.close_conn(0);
+        }
     }
 }
 
@@ -29,10 +37,10 @@ fn health_check_system(mut dtls_server: ResMut<DtlsServer>) {
         panic!("{e}");
     }
     if let Some((idx, Err(e))) = health.sender.get(0) {
-        error!("conn index {idx}: {e}");
+        warn!("conn index {idx}: {e}");
     }
     if let Some((idx, Err(e))) = health.recver.get(0) {
-        error!("conn index {idx}: {e}");
+        warn!("conn index {idx}: {e}");
     }
 }
 
@@ -43,7 +51,7 @@ fn main() {
             Duration::from_secs_f32(1.0 / 30.0)
         )),
         LogPlugin{
-            level: Level::INFO,
+            level: Level::DEBUG,
             ..default()
         },
         DtlsServerPlugin{
@@ -52,10 +60,10 @@ fn main() {
             buf_size: 512
         }
     ))
+    .insert_resource(ServerHellooonCounter(0))
     .add_systems(Update, (
-        recv_and_print_system,
+        recv_hellooon_system,
         health_check_system
     ))
     .run();
 }
-

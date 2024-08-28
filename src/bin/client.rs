@@ -58,18 +58,14 @@ impl Plugin for ClientGraphicsPlugin {
 }
 
 #[derive(Resource)]
-struct HeloonCounter(pub usize);
+struct ClientHellooonCounter(pub usize);
 
-fn send_helooon_system(
-    mut dtls_client: ResMut<DtlsClient>, 
-    mut counter: ResMut<HeloonCounter>
+fn send_hellooon_system(
+    dtls_client: Res<DtlsClient>, 
+    mut counter: ResMut<ClientHellooonCounter>
 ) {
-    if counter.0 > 10 {
-        dtls_client.close();
-        return;
-    }
-
-    let msg = Bytes::from_static(b"helloooooon!!");
+    let str = format!("helloooooon {}", counter.0);
+    let msg = Bytes::from(str);
     if let Err(e) = dtls_client.send(msg) {
         panic!("{e}");
     }
@@ -101,9 +97,9 @@ fn main() {
             server_name: "localhost"
         }
     ))
-    .insert_resource(HeloonCounter(0))
+    .insert_resource(ClientHellooonCounter(0))
     .add_systems(Update, (
-        send_helooon_system,
+        send_hellooon_system,
         health_check_system
     ))
     .run();

@@ -3,12 +3,17 @@ use super::dtls_server::*;
 use tokio::sync::mpsc::error::TryRecvError;
 
 pub(super) fn accept_system(mut dtls_server: ResMut<DtlsServer>) {
-    let accepted = match dtls_server.accept_rx.try_recv() {
+    let Some(ref mut acpt_rx) = dtls_server.acpt_rx else {
+        return;
+    };
+
+    let accepted = match acpt_rx.try_recv() {
         Ok(a) => a,
         Err(TryRecvError::Empty) => return,
         Err(e) => panic!("{e}") 
     };
 
+    debug!("starting recv for conn: {}", accepted.index());
     if let Err(e) = dtls_server.start_recv_loop(accepted) {
         panic!("{e}");
     }
