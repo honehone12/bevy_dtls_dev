@@ -160,8 +160,9 @@ impl DtlsClient {
         let(close_send_tx, close_send_rx) = tokio_channel::<DtlsClientClose>();
         self.send_tx = Some(send_tx);
         self.close_send_tx = Some(close_send_tx);
+        
         let handle = self.runtime.spawn(
-            Self::send_loop(send_rx, close_send_rx, c)
+            Self::send_loop(c, send_rx, close_send_rx)
         );
         self.send_handle = Some(handle);
 
@@ -169,9 +170,9 @@ impl DtlsClient {
     }
 
     async fn send_loop(
+        conn: Arc<dyn Conn + Sync + Send>,
         mut send_rx: TokioRx<Bytes>,
-        mut close_send_rx: TokioRx<DtlsClientClose>,
-        conn: Arc<dyn Conn + Sync + Send>
+        mut close_send_rx: TokioRx<DtlsClientClose>
     )-> anyhow::Result<()> {
         loop {
             tokio::select! {
@@ -180,7 +181,10 @@ impl DtlsClient {
                 Some(msg) = send_rx.recv() => {
                     conn.send(&msg).await?;
                 }
-                Some(_) = close_send_rx.recv() => break,
+                Some(_) = close_send_rx.recv() => {
+                    info!("closing client sender");
+                    break;
+                },
                 else => {
                     warn!("tx is dropped before rx is closed");
                     break;

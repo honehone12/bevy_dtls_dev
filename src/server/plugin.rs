@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use super::dtls_server::*;
-use crossbeam::channel::TryRecvError;
+use tokio::sync::mpsc::error::TryRecvError;
 
-pub(super) fn accept_system(dtls_server: Res<DtlsServer>) {
+pub(super) fn accept_system(mut dtls_server: ResMut<DtlsServer>) {
     let accepted = match dtls_server.accept_rx.try_recv() {
         Ok(a) => a,
         Err(TryRecvError::Empty) => return,

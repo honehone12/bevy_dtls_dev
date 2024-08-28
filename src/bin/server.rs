@@ -8,9 +8,9 @@ use bevy_dtls_dev::server::{
     dtls_server::DtlsServer,
     plugin::DtlsServerPlugin
 };
-use crossbeam::channel::TryRecvError;
+use tokio::sync::mpsc::error::TryRecvError;
 
-fn recv_and_print_system(dtls_server: Res<DtlsServer>) {
+fn recv_and_print_system(mut dtls_server: ResMut<DtlsServer>) {
     loop {
         let (idx, raw) = match dtls_server.try_recv() {
             Ok(ir) => ir,

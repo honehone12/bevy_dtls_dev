@@ -9,6 +9,12 @@ use bevy::{
 };
 use tokio::{
     runtime::{self, Runtime}, 
+    sync::mpsc::{
+        unbounded_channel as tokio_channel, 
+        UnboundedSender as TokioTx,
+        UnboundedReceiver as TokioRx,
+        error::TryRecvError
+    },
     task::JoinHandle
 };
 use webrtc_dtls::{
@@ -17,16 +23,13 @@ use webrtc_dtls::{
 };
 use webrtc_util::conn::{Listener, Conn};
 use bytes::{Bytes, BytesMut};
-use crossbeam::channel::{
-    unbounded as crossbeam_channel, 
-    Receiver as CrossbeamRx, 
-    Sender as CrossbeamTx, TryRecvError
-};
 
 pub struct DtlsServerConfig {
     pub listen_addr: &'static str,
     pub server_names: Vec<String>
 }
+
+pub struct DtlsClientClose;
 
 pub struct DtlsServerHealth {
     pub listener: Option<anyhow::Result<()>>,
@@ -54,13 +57,13 @@ pub struct DtlsServer {
     
     pub(super) listener: Option<Arc<dyn Listener + Sync + Send>>,
     pub(super) accept_handle: Option<JoinHandle<anyhow::Result<()>>>,
-    pub(super) accept_tx: CrossbeamTx<ConnIndex>,
-    pub(super) accept_rx: CrossbeamRx<ConnIndex>,
+    pub(super) accept_tx: TokioTx<ConnIndex>,
+    pub(super) accept_rx: TokioRx<ConnIndex>,
     
     pub(super) conn_map: Arc<StdRwLock<HashMap<usize, DtlsConn>>>,
     pub(super) recv_buf_size: usize,
-    pub(super) recv_tx: CrossbeamTx<(ConnIndex, Bytes)>,
-    pub(super) recv_rx: CrossbeamRx<(ConnIndex, Bytes)>,
+    pub(super) recv_tx: TokioTx<(ConnIndex, Bytes)>,
+    pub(super) recv_rx: TokioRx<(ConnIndex, Bytes)>,
 }
 
 impl DtlsServer {
@@ -70,8 +73,8 @@ impl DtlsServer {
         .enable_all()
         .build()?;
 
-        let (accept_tx, accept_rx) = crossbeam_channel::<ConnIndex>();
-        let (recv_tx, recv_rx) = crossbeam_channel::<(ConnIndex, Bytes)>();
+        let (accept_tx, accept_rx) = tokio_channel::<ConnIndex>();
+        let (recv_tx, recv_rx) = tokio_channel::<(ConnIndex, Bytes)>();
 
         Ok(Self { 
             runtime: Arc::new(rt),
@@ -86,7 +89,7 @@ impl DtlsServer {
         })
     }
 
-    pub fn try_recv(&self) -> Result<(ConnIndex, Bytes), TryRecvError> {
+    pub fn try_recv(&mut self) -> Result<(ConnIndex, Bytes), TryRecvError> {
         self.recv_rx.try_recv()
     }
 
@@ -195,7 +198,8 @@ impl DtlsServer {
     async fn accept_loop(
         listener: Arc<dyn Listener + Sync + Send>,
         conn_map: Arc<StdRwLock<HashMap<usize, DtlsConn>>>,
-        accepted_tx: CrossbeamTx<ConnIndex>
+        accepted_tx: TokioTx<ConnIndex>,
+        //close_accept_rx: TokioRx<DtlsClientClose>
     ) -> anyhow::Result<()> {
         let mut index = 0;
 
@@ -240,7 +244,7 @@ impl DtlsServer {
     async fn recv_loop(
         conn_idx: ConnIndex,
         conn: Arc<dyn Conn + Sync + Send>,
-        recv_tx: CrossbeamTx<(ConnIndex, Bytes)>, 
+        recv_tx: TokioTx<(ConnIndex, Bytes)>, 
         buf_size: usize
     ) -> anyhow::Result<()> {
         let mut buf = BytesMut::zeroed(buf_size);
