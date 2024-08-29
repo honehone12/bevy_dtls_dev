@@ -58,13 +58,13 @@ impl Plugin for ClientGraphicsPlugin {
 }
 
 #[derive(Resource)]
-struct ClientHellooonCounter(pub usize);
+struct ClientHellooonCounter(usize);
 
 fn send_hellooon_system(
     dtls_client: Res<DtlsClient>, 
     mut counter: ResMut<ClientHellooonCounter>
 ) {
-    let str = format!("helloooooon {}", counter.0);
+    let str = format!("from client helloooooon {}", counter.0);
     let msg = Bytes::from(str);
     match dtls_client.send(msg) {
         Ok(_) => counter.0 += 1, 
@@ -72,13 +72,24 @@ fn send_hellooon_system(
     }
 }
 
+fn recv_hellooon_system(mut dtls_client: ResMut<DtlsClient>) {
+    loop {
+        let Some(bytes) = dtls_client.recv() else {
+            return;
+        };
+
+        let msg = String::from_utf8(bytes.to_vec()).unwrap();
+        info!("message: {msg}");
+    }
+}
+
 fn health_check_system(mut dtls_client: ResMut<DtlsClient>) {
     let health = dtls_client.health_check();
     if let Some(Err(e)) = health.sender {
-        panic!("{e}");
+        panic!("sender: {e}");
     }
     if let Some(Err(e)) = health.recver {
-        panic!("{e}");
+        panic!("recver: {e}");
     }
 }
 
@@ -86,7 +97,7 @@ fn main() {
     App::new()
     .add_plugins((
         DefaultPlugins.set(LogPlugin{
-            level: Level::INFO,
+            level: Level::DEBUG,
             ..default()
         }),
         ClientGraphicsPlugin,
@@ -100,6 +111,7 @@ fn main() {
     .insert_resource(ClientHellooonCounter(0))
     .add_systems(Update, (
         send_hellooon_system,
+        recv_hellooon_system,
         health_check_system
     ))
     .run();

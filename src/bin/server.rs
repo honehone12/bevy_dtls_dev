@@ -8,39 +8,44 @@ use bevy_dtls_dev::server::{
     dtls_server::DtlsServer,
     plugin::DtlsServerPlugin
 };
+use bytes::Bytes;
 
 #[derive(Resource)]
-struct ServerHellooonCounter(pub usize);
+struct ServerHellooonCounter(usize);
 
-fn recv_hellooon_system(
-    mut dtls_server: ResMut<DtlsServer>,
+fn send_hellooon_system(
+    dtls_server: Res<DtlsServer>, 
     mut counter: ResMut<ServerHellooonCounter>
 ) {
+    let str = format!("from server helloooooon {}", counter.0);
+    let msg = Bytes::from(str);
+    match dtls_server.send(0, msg) {
+        Ok(_) => counter.0 += 1, 
+        Err(e) => error!("{e}")
+    }
+}
+
+fn recv_hellooon_system(mut dtls_server: ResMut<DtlsServer>) {
     loop {
-        let Some((idx, raw)) = dtls_server.recv() else {
+        let Some((idx, bytes)) = dtls_server.recv() else {
             return;
         };
 
-        let msg = String::from_utf8(raw.to_vec()).unwrap();
-        info!("message from conn: {}, {msg}", idx.index());
-        counter.0 += 1;
-
-        if counter.0 >= 10 {
-            dtls_server.close_conn(0);
-        }
+        let msg = String::from_utf8(bytes.to_vec()).unwrap();
+        info!("message from conn: {}: {msg}", idx.index());
     }
 }
 
 fn health_check_system(mut dtls_server: ResMut<DtlsServer>) {
     let health = dtls_server.health_check();
     if let Some(Err(e)) = health.listener {
-        panic!("{e}");
+        panic!("listener: {e}");
     }
     if let Some((idx, Err(e))) = health.sender.get(0) {
-        warn!("conn index {idx}: {e}");
+        panic!("sender: {idx}: {e}");
     }
     if let Some((idx, Err(e))) = health.recver.get(0) {
-        warn!("conn index {idx}: {e}");
+        panic!("recver: {idx}: {e}");
     }
 }
 
@@ -62,6 +67,7 @@ fn main() {
     ))
     .insert_resource(ServerHellooonCounter(0))
     .add_systems(Update, (
+        send_hellooon_system,
         recv_hellooon_system,
         health_check_system
     ))

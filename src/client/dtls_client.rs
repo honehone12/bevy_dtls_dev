@@ -262,10 +262,10 @@ impl DtlsClient {
         let mut buf = BytesMut::zeroed(buf_size);
 
         loop {
-            let (n, addr) = select! {
+            let n = select! {
                 biased;
 
-                result = conn.recv_from(&mut buf) => result?,
+                result = conn.recv(&mut buf) => result?,
                 Some(_) = close_recv_rx.recv() => break,
                 else => {
                     error!("close recv tx is closed before rx is closed");
@@ -278,7 +278,7 @@ impl DtlsClient {
             recv_tx.send(receved)?;
 
             buf.resize(buf_size, 0);
-            debug!("received {n}bytes from {addr}");
+            debug!("received {n}bytes from");
         }
 
         conn.close().await?;
