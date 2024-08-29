@@ -25,6 +25,15 @@ use webrtc_dtls::{
 use webrtc_util::conn::{Listener, Conn};
 use bytes::{Bytes, BytesMut};
 
+#[derive(Clone, Copy)]
+pub struct ConnIndex(pub(crate) usize);
+
+impl ConnIndex {
+    pub fn index(&self) -> usize {
+        self.0
+    }
+}
+
 pub struct DtlsServerConfig {
     pub listen_addr: &'static str,
     pub server_names: Vec<String>
@@ -38,16 +47,7 @@ pub struct DtlsServerHealth {
     pub recver: Vec<(usize, anyhow::Result<()>)>
 }
 
-#[derive(Clone, Copy)]
-pub struct ConnIndex(usize);
-
-impl ConnIndex {
-    pub fn index(&self) -> usize {
-        self.0
-    }
-}
-
-pub struct DtlsConn {
+pub(super) struct DtlsConn {
     pub(super) conn: Arc<dyn Conn + Sync + Send>,
     pub(super) recv_handle: Option<JoinHandle<anyhow::Result<()>>>,
     pub(super) close_recv_tx: Option<TokioTx<DtlsServerClose>>
@@ -63,6 +63,7 @@ pub struct DtlsServer {
     pub(super) close_acpt_tx: Option<TokioTx<DtlsServerClose>>,
     
     pub(super) conn_map: Arc<StdRwLock<HashMap<usize, DtlsConn>>>,
+
     pub(super) recv_buf_size: usize,
     pub(super) recv_tx: Option<TokioTx<(ConnIndex, Bytes)>>,
     pub(super) recv_rx: Option<TokioRx<(ConnIndex, Bytes)>>,
@@ -84,57 +85,22 @@ impl DtlsServer {
             close_acpt_tx: None,
             
             conn_map: default(),
+
             recv_buf_size,
             recv_tx: None,
             recv_rx: None,
         })
     }
 
-    pub fn close_all(&mut self) {
-        let ks: Vec<usize> = {
-            self.conn_map.read()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect()
-        };
-
-        for k in ks {
-            self.close_conn(k);
-        }
-
-        self.close_listener();
-        self.recv_tx = None;
-        self.recv_rx = None;
+    pub fn start(&mut self, config: DtlsServerConfig)
+    -> anyhow::Result<()> {
+        self.start_listen(config)?;
+        self.start_acpt_loop()
     }
 
-    fn close_listener(&mut self) {
-        let Some(ref close_acpt_tx) = self.close_acpt_tx else {
-            return;
-        };
-
-        if let Err(e) = close_acpt_tx.send(DtlsServerClose) {
-            error!("close listener tx is closed before set to None: {e}");
-        }
-
-        self.close_acpt_tx = None;
-        self.acpt_rx = None;
-        self.listener = None;
-    }
-
-    pub fn close_conn(&mut self, index: usize) {
-        let mut w = self.conn_map.write()
-        .unwrap();
-        let Some(dtls_conn) = w.remove(&index) else {
-            return;
-        };
-        let Some(close_recv_tx) = dtls_conn.close_recv_tx else {
-            return;
-        };
-
-        if let Err(e) = close_recv_tx.send(DtlsServerClose) {
-            error!("close recv tx is closed before set to None: {e}");
-        }
+    pub(super) fn start_conn(&self, conn_idx: ConnIndex)
+    -> anyhow::Result<()> {
+        self.start_recv_loop(conn_idx)
     }
 
     pub fn recv(&mut self) -> Option<(ConnIndex, Bytes)> {
@@ -155,64 +121,43 @@ impl DtlsServer {
 
     pub fn health_check(&mut self) -> DtlsServerHealth {
         DtlsServerHealth{
-            listener: self.listener_health_check(),
+            listener: self.health_check_acpt(),
             sender: vec![],
-            recver: self.recver_health_check()
+            recver: self.health_check_recv()
         }
     }
 
-    fn listener_health_check(&mut self) 
-    -> Option<anyhow::Result<()>> {
-        let handle_ref = self.acpt_handle.as_ref()?;
-
-        if !handle_ref.is_finished() {
-            return None;
-        }
-
-        let handle = self.acpt_handle.take()?;
-        match future::block_on(handle) {
-            Ok(r) => Some(r),
-            Err(e) => Some(Err(anyhow!(e)))
-        }
-    }
-
-    fn recver_health_check(&mut self)
-    -> Vec<(usize, anyhow::Result<()>)> {
-        let finished = {
-            let mut v = vec![];
-            let mut w = self.conn_map.write()
-            .unwrap();
-            for (idx, dtls_conn) in w.iter_mut() {
-                let Some(ref handle_ref) = dtls_conn.recv_handle else {
-                    continue;
-                };
-                
-                if !handle_ref.is_finished() {
-                    continue;
-                }
-
-                let handle = dtls_conn.recv_handle.take()
-                .unwrap();
-                v.push((*idx, handle));
-            }
-            v
+    pub fn close_conn(&mut self, index: usize) {
+        let mut w = self.conn_map.write()
+        .unwrap();
+        let Some(dtls_conn) = w.remove(&index) else {
+            return;
+        };
+        let Some(close_recv_tx) = dtls_conn.close_recv_tx else {
+            return;
         };
 
-        let mut results = vec![];
-        for (idx, handle) in finished {
-            let r = match future::block_on(handle) {
-                Ok(r) => r,
-                Err(e) => Err(anyhow!(e))
-            };
-            results.push((idx, r));
+        if let Err(e) = close_recv_tx.send(DtlsServerClose) {
+            error!("close recv tx is closed before set to None: {e}");
         }
-        results
     }
 
-    pub fn start(&mut self, config: DtlsServerConfig)
-    -> anyhow::Result<()> {
-        self.start_listen(config)?;
-        self.start_accept_loop()
+    pub fn close_all(&mut self) {
+        let ks: Vec<usize> = {
+            self.conn_map.read()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+        };
+
+        for k in ks {
+            self.close_conn(k);
+        }
+
+        self.close_acpt_loop();
+        self.recv_tx = None;
+        self.recv_rx = None;
     }
 
     fn start_listen(&mut self, config: DtlsServerConfig) 
@@ -240,7 +185,7 @@ impl DtlsServer {
         Ok(Arc::new(listener))
     }
 
-    fn start_accept_loop(&mut self)
+    fn start_acpt_loop(&mut self)
     -> anyhow::Result<()> {
         let listener = match self.listener {
             Some(ref l) => l.clone(),
@@ -258,14 +203,14 @@ impl DtlsServer {
         self.recv_rx = Some(recv_rx);
         
         let handle = self.runtime.spawn(
-            Self::accept_loop(listener, conns, acpt_tx, close_acpt_rx)            
+            Self::acpt_loop(listener, conns, acpt_tx, close_acpt_rx)            
         );
         
         self.acpt_handle = Some(handle);
         Ok(())
     }
 
-    async fn accept_loop(
+    async fn acpt_loop(
         listener: Arc<dyn Listener + Sync + Send>,
         conn_map: Arc<StdRwLock<HashMap<usize, DtlsConn>>>,
         acpt_tx: TokioTx<ConnIndex>,
@@ -306,7 +251,36 @@ impl DtlsServer {
         Ok(())
     }
 
-    pub(super) fn start_recv_loop(&self, conn_idx: ConnIndex) 
+    fn health_check_acpt(&mut self) 
+    -> Option<anyhow::Result<()>> {
+        let handle_ref = self.acpt_handle.as_ref()?;
+
+        if !handle_ref.is_finished() {
+            return None;
+        }
+
+        let handle = self.acpt_handle.take()?;
+        match future::block_on(handle) {
+            Ok(r) => Some(r),
+            Err(e) => Some(Err(anyhow!(e)))
+        }
+    }
+
+    fn close_acpt_loop(&mut self) {
+        let Some(ref close_acpt_tx) = self.close_acpt_tx else {
+            return;
+        };
+
+        if let Err(e) = close_acpt_tx.send(DtlsServerClose) {
+            error!("close listener tx is closed before set to None: {e}");
+        }
+
+        self.close_acpt_tx = None;
+        self.acpt_rx = None;
+        self.listener = None;
+    }
+
+    fn start_recv_loop(&self, conn_idx: ConnIndex) 
     -> anyhow::Result<()> {
         let mut w = self.conn_map.write()
         .unwrap();
@@ -325,10 +299,10 @@ impl DtlsServer {
 
         let handle = self.runtime.spawn(Self::recv_loop(
             conn_idx,
+            self.recv_buf_size,
             conn,
             recv_tx,
-            close_recv_rx,
-            self.recv_buf_size
+            close_recv_rx
         ));
         dtls_conn.recv_handle = Some(handle);
         
@@ -337,10 +311,10 @@ impl DtlsServer {
 
     async fn recv_loop(
         conn_idx: ConnIndex,
+        buf_size: usize,
         conn: Arc<dyn Conn + Sync + Send>,
         recv_tx: TokioTx<(ConnIndex, Bytes)>, 
-        mut close_recv_rx: TokioRx<DtlsServerClose>,
-        buf_size: usize
+        mut close_recv_rx: TokioRx<DtlsServerClose>
     ) -> anyhow::Result<()> {
         let mut buf = BytesMut::zeroed(buf_size);
 
@@ -365,7 +339,40 @@ impl DtlsServer {
         }
 
         conn.close().await?;
-        debug!("dtls conn {} is closed", conn_idx.index());
+        debug!("dtls server receiver: {} is closed", conn_idx.index());
         Ok(())
+    }
+
+    fn health_check_recv(&mut self)
+    -> Vec<(usize, anyhow::Result<()>)> {
+        let finished = {
+            let mut v = vec![];
+            let mut w = self.conn_map.write()
+            .unwrap();
+            for (idx, dtls_conn) in w.iter_mut() {
+                let Some(ref handle_ref) = dtls_conn.recv_handle else {
+                    continue;
+                };
+                
+                if !handle_ref.is_finished() {
+                    continue;
+                }
+
+                let handle = dtls_conn.recv_handle.take()
+                .unwrap();
+                v.push((*idx, handle));
+            }
+            v
+        };
+
+        let mut results = vec![];
+        for (idx, handle) in finished {
+            let r = match future::block_on(handle) {
+                Ok(r) => r,
+                Err(e) => Err(anyhow!(e))
+            };
+            results.push((idx, r));
+        }
+        results
     }
 }

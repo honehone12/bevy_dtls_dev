@@ -4,12 +4,13 @@ use super::dtls_client::*;
 pub struct DtlsClientPlugin {
     pub server_addr: &'static str,
     pub client_addr: &'static str,
-    pub server_name: &'static str
+    pub server_name: &'static str,
+    pub buf_size: usize
 }
 
 impl Plugin for DtlsClientPlugin {
     fn build(&self, app: &mut App) {
-        let mut dtls_client = match DtlsClient::new() {
+        let mut dtls_client = match DtlsClient::new(self.buf_size) {
             Ok(c) => c,
             Err(e) => panic!("{e}")
         };

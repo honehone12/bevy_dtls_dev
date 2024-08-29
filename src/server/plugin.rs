@@ -14,7 +14,7 @@ pub(super) fn accept_system(mut dtls_server: ResMut<DtlsServer>) {
     };
 
     debug!("starting recv for conn: {}", accepted.index());
-    if let Err(e) = dtls_server.start_recv_loop(accepted) {
+    if let Err(e) = dtls_server.start_conn(accepted) {
         panic!("{e}");
     }
 }

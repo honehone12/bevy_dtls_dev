@@ -94,7 +94,8 @@ fn main() {
         DtlsClientPlugin{
             server_addr: "127.0.0.1:4443",
             client_addr: "127.0.0.1:0",
-            server_name: "localhost"
+            server_name: "localhost",
+            buf_size: 512
         }
     ))
     .insert_resource(ClientHellooonCounter(0))
