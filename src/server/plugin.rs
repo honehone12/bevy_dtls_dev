@@ -1,20 +1,13 @@
 use bevy::prelude::*;
 use super::dtls_server::*;
-use tokio::sync::mpsc::error::TryRecvError;
 
-pub(super) fn accept_system(mut dtls_server: ResMut<DtlsServer>) {
-    let Some(ref mut acpt_rx) = dtls_server.acpt_rx else {
+fn accept_system(mut dtls_server: ResMut<DtlsServer>) {
+    let Some(acpted) = dtls_server.acpt() else {
         return;
     };
 
-    let accepted = match acpt_rx.try_recv() {
-        Ok(a) => a,
-        Err(TryRecvError::Empty) => return,
-        Err(e) => panic!("{e}") 
-    };
-
-    debug!("starting recv for conn: {}", accepted.index());
-    if let Err(e) = dtls_server.start_conn(accepted) {
+    debug!("starting recv for conn: {}", acpted.0);
+    if let Err(e) = dtls_server.start_conn(acpted) {
         panic!("{e}");
     }
 }

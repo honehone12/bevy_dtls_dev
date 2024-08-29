@@ -66,11 +66,10 @@ fn send_hellooon_system(
 ) {
     let str = format!("helloooooon {}", counter.0);
     let msg = Bytes::from(str);
-    if let Err(e) = dtls_client.send(msg) {
-        panic!("{e}");
+    match dtls_client.send(msg) {
+        Ok(_) => counter.0 += 1, 
+        Err(e) => error!("{e}")
     }
-
-    counter.0 += 1;
 }
 
 fn health_check_system(mut dtls_client: ResMut<DtlsClient>) {

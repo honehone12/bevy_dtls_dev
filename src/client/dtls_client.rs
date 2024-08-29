@@ -43,14 +43,14 @@ pub struct DtlsClient {
 
     conn: Option<Arc<dyn Conn + Sync + Send>>,
 
+    send_handle: Option<JoinHandle<anyhow::Result<()>>>,
     send_tx: Option<TokioTx<Bytes>>,
     close_send_tx: Option<TokioTx<DtlsClientClose>>,
-    send_handle: Option<JoinHandle<anyhow::Result<()>>>,
 
+    recv_handle: Option<JoinHandle<anyhow::Result<()>>>,
     recv_buf_size: usize,
     recv_rx: Option<TokioRx<Bytes>>,
-    close_recv_tx: Option<TokioTx<DtlsClientClose>>,
-    recv_handle: Option<JoinHandle<anyhow::Result<()>>>
+    close_recv_tx: Option<TokioTx<DtlsClientClose>>
 }
 
 impl DtlsClient {
@@ -64,14 +64,14 @@ impl DtlsClient {
 
             conn: None,
             
+            send_handle: None,
             send_tx: None,
             close_send_tx: None,
-            send_handle: None,
             
+            recv_handle: None,
             recv_buf_size,
             recv_rx: None,
-            close_recv_tx: None,
-            recv_handle: None
+            close_recv_tx: None
         })
     }
 
@@ -83,14 +83,12 @@ impl DtlsClient {
     }
 
     pub fn send(&self, message: Bytes) -> anyhow::Result<()> {
-        let send_tx = match self.send_tx {
-            Some(ref tx) => tx,
-            None => bail!("send tx is None")
+        let Some(ref send_tx) = self.send_tx else {
+            bail!("send tx is None");
         };
 
-        if send_tx.send(message)
-        .is_err() {
-            bail!("client conn is not started or disconnected");
+        if let Err(e) = send_tx.send(message) {
+            bail!("conn is not started or disconnected: {e}");
         }
         Ok(())
     }
@@ -104,7 +102,7 @@ impl DtlsClient {
             Ok(b) => Some(b),
             Err(e) => {
                 if matches!(e, TryRecvError::Disconnected) {
-                    warn!("recv rx is closed before set to None");
+                    warn!("recv rx is closed before set to None: {e}");
                 }
                 None
             }
@@ -159,8 +157,7 @@ impl DtlsClient {
         Ok(Arc::new(dtls_conn))
     }
 
-    fn start_send_loop(&mut self) 
-    -> anyhow::Result<()> {
+    fn start_send_loop(&mut self) -> anyhow::Result<()> {
         let c = match self.conn {
             Some(ref c) => c.clone(),
             None => bail!("conn is none")
@@ -193,16 +190,15 @@ impl DtlsClient {
                     conn.send(&msg).await?;
                 }
                 Some(_) = close_send_rx.recv() => break,
-
                 else => {
-                    warn!("close send tx is dropped before rx is closed");
+                    warn!("close send tx is closed before rx is closed");
                     break;
                 }
             }
         }
 
         conn.close().await?;
-        debug!("dtls client sender is closed");
+        debug!("dtls client send loop is closed");
         Ok(())
     }
 
@@ -286,7 +282,7 @@ impl DtlsClient {
         }
 
         conn.close().await?;
-        debug!("dtls client recver is closed");
+        debug!("dtls client recv loop is closed");
         Ok(())
     }
 

@@ -39,7 +39,7 @@ pub struct DtlsServerConfig {
     pub server_names: Vec<String>
 }
 
-pub struct DtlsServerClose;
+struct DtlsServerClose;
 
 pub struct DtlsServerHealth {
     pub listener: Option<anyhow::Result<()>>,
@@ -48,25 +48,43 @@ pub struct DtlsServerHealth {
 }
 
 pub(super) struct DtlsConn {
-    pub(super) conn: Arc<dyn Conn + Sync + Send>,
-    pub(super) recv_handle: Option<JoinHandle<anyhow::Result<()>>>,
-    pub(super) close_recv_tx: Option<TokioTx<DtlsServerClose>>
+    conn: Arc<dyn Conn + Sync + Send>,
+    
+    recv_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    close_recv_tx: Option<TokioTx<DtlsServerClose>>,
+
+    send_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    send_tx: Option<TokioTx<Bytes>>,
+    close_send_tx: Option<TokioTx<DtlsServerClose>>
+}
+
+impl DtlsConn {
+    pub(super) fn new(conn: Arc<dyn Conn + Sync + Send>) -> Self {
+        Self{
+            conn,
+            recv_handle: None,
+            close_recv_tx: None,
+            send_handle: None,
+            send_tx: None,
+            close_send_tx: None,
+        }
+    }
 }
 
 #[derive(Resource)]
 pub struct DtlsServer {
-    pub(super) runtime: Arc<Runtime>,
+    runtime: Arc<Runtime>,
     
-    pub(super) listener: Option<Arc<dyn Listener + Sync + Send>>,
-    pub(super) acpt_handle: Option<JoinHandle<anyhow::Result<()>>>,
-    pub(super) acpt_rx: Option<TokioRx<ConnIndex>>,
-    pub(super) close_acpt_tx: Option<TokioTx<DtlsServerClose>>,
+    listener: Option<Arc<dyn Listener + Sync + Send>>,
+    acpt_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    acpt_rx: Option<TokioRx<ConnIndex>>,
+    close_acpt_tx: Option<TokioTx<DtlsServerClose>>,
     
-    pub(super) conn_map: Arc<StdRwLock<HashMap<usize, DtlsConn>>>,
+    conn_map: Arc<StdRwLock<HashMap<usize, DtlsConn>>>,
 
-    pub(super) recv_buf_size: usize,
-    pub(super) recv_tx: Option<TokioTx<(ConnIndex, Bytes)>>,
-    pub(super) recv_rx: Option<TokioRx<(ConnIndex, Bytes)>>,
+    recv_buf_size: usize,
+    recv_tx: Option<TokioTx<(ConnIndex, Bytes)>>,
+    recv_rx: Option<TokioRx<(ConnIndex, Bytes)>>,
 }
 
 impl DtlsServer {
@@ -98,9 +116,42 @@ impl DtlsServer {
         self.start_acpt_loop()
     }
 
-    pub(super) fn start_conn(&self, conn_idx: ConnIndex)
+    pub(super) fn start_conn(&mut self, conn_index: ConnIndex)
     -> anyhow::Result<()> {
-        self.start_recv_loop(conn_idx)
+        self.start_recv_loop(conn_index)?;
+        self.start_send_loop(conn_index)
+    }
+
+    pub(super) fn acpt(&mut self) -> Option<ConnIndex> {
+        let Some(ref mut acpt_rx) = self.acpt_rx else {
+            return None;
+        };
+
+        match acpt_rx.try_recv() {
+            Ok(a) => Some(a),
+            Err(TryRecvError::Empty) => None,
+            Err(e) => {
+                error!("acpt rx is closed before set to None: {e}");
+                None
+            }
+        }
+    }
+
+    pub fn send(&self, conn_index: usize, message: Bytes) 
+    -> anyhow::Result<()> {
+        let r = self.conn_map.read()
+        .unwrap();
+        let Some(ref dtls_conn) = r.get(&conn_index) else {
+            bail!("dtls conn: {conn_index} is None");
+        };
+        let Some(ref send_tx) = dtls_conn.send_tx else {
+            bail!("send tx: {conn_index} is None");
+        };
+
+        if let Err(e) = send_tx.send(message) {
+            bail!("conn: {conn_index} is not started or disconnected: {e}");
+        }
+        Ok(())
     }
 
     pub fn recv(&mut self) -> Option<(ConnIndex, Bytes)> {
@@ -112,7 +163,7 @@ impl DtlsServer {
             Ok(ib) => Some(ib),
             Err(e) => {
                 if matches!(e, TryRecvError::Disconnected) {
-                    warn!("recv rx is closed before set to None");
+                    warn!("recv rx is closed before set to None: {e}");
                 }
                 None
             }
@@ -122,23 +173,27 @@ impl DtlsServer {
     pub fn health_check(&mut self) -> DtlsServerHealth {
         DtlsServerHealth{
             listener: self.health_check_acpt(),
-            sender: vec![],
+            sender: self.health_check_send(),
             recver: self.health_check_recv()
         }
     }
 
-    pub fn close_conn(&mut self, index: usize) {
+    pub fn close_conn(&mut self, conn_index: usize) {
         let mut w = self.conn_map.write()
         .unwrap();
-        let Some(dtls_conn) = w.remove(&index) else {
+        let Some(dtls_conn) = w.remove(&conn_index) else {
             return;
         };
-        let Some(close_recv_tx) = dtls_conn.close_recv_tx else {
-            return;
+        if let Some(close_recv_tx) = dtls_conn.close_recv_tx {
+            if let Err(e) = close_recv_tx.send(DtlsServerClose) {
+                error!("close recv tx: {conn_index} is closed before set to None: {e}");
+            }    
         };
 
-        if let Err(e) = close_recv_tx.send(DtlsServerClose) {
-            error!("close recv tx is closed before set to None: {e}");
+        if let Some(close_send_tx) = dtls_conn.close_send_tx {
+            if let Err(e) = close_send_tx.send(DtlsServerClose) {
+                error!("close recv tx: {conn_index} is closed before set to None: {e}");
+            }
         }
     }
 
@@ -236,11 +291,7 @@ impl DtlsServer {
             let mut w = conn_map.write()
             .unwrap();
             debug_assert!(!w.contains_key(&idx));
-            w.insert(idx, DtlsConn{
-                conn,
-                recv_handle: None,
-                close_recv_tx: None,
-            });
+            w.insert(idx, DtlsConn::new(conn));
 
             acpt_tx.send(ConnIndex(idx))?;
             debug!("conn from {addr} accepted");
@@ -286,12 +337,12 @@ impl DtlsServer {
         .unwrap();
         let dtls_conn = match w.get_mut(&conn_idx.0) {
             Some(c) => c,
-            None => bail!("dtls conn is None")
+            None => bail!("dtls conn: {} is None", conn_idx.0)
         };
         let conn = dtls_conn.conn.clone();
         let recv_tx = match self.recv_tx {
             Some(ref tx) => tx.clone(),
-            None => bail!("recv tx is None")
+            None => bail!("recv tx is still None")
         };
 
         let (close_recv_tx, close_recv_rx) = tokio_channel::<DtlsServerClose>();
@@ -325,7 +376,7 @@ impl DtlsServer {
                 result = conn.recv_from(&mut buf) => result?,
                 Some(_) = close_recv_rx.recv() => break,
                 else => {
-                    error!("close recv tx is closed before rx is closed");
+                    error!("close recv tx: {} is closed before rx is closed", conn_idx.0);
                     break;
                 }
             };
@@ -335,11 +386,11 @@ impl DtlsServer {
             recv_tx.send((conn_idx, recved))?;
 
             buf.resize(buf_size, 0);
-            debug!("received {n}bytes from {addr}");
+            debug!("received {n}bytes from {}:{addr}", conn_idx.0);
         }
 
         conn.close().await?;
-        debug!("dtls server receiver: {} is closed", conn_idx.index());
+        debug!("dtls server recv loop: {} is closed", conn_idx.0);
         Ok(())
     }
 
@@ -359,6 +410,91 @@ impl DtlsServer {
                 }
 
                 let handle = dtls_conn.recv_handle.take()
+                .unwrap();
+                v.push((*idx, handle));
+            }
+            v
+        };
+
+        let mut results = vec![];
+        for (idx, handle) in finished {
+            let r = match future::block_on(handle) {
+                Ok(r) => r,
+                Err(e) => Err(anyhow!(e))
+            };
+            results.push((idx, r));
+        }
+        results
+    }
+
+    fn start_send_loop(&mut self, conn_idx: ConnIndex) 
+    -> anyhow::Result<()> {
+        let mut w = self.conn_map.write()
+        .unwrap();
+        let Some(dtls_conn) = w.get_mut(&conn_idx.0) else {
+            bail!("dtls conn: {} is None", conn_idx.0);
+        };
+
+        let conn = dtls_conn.conn.clone();
+
+        let (send_tx, send_rx) = tokio_channel::<Bytes>();
+        let (close_send_tx, close_send_rx) = tokio_channel::<DtlsServerClose>();
+        dtls_conn.send_tx = Some(send_tx);
+        dtls_conn.close_send_tx = Some(close_send_tx);
+
+        let handle = self.runtime.spawn(Self::send_loop(
+            conn_idx, 
+            conn, 
+            send_rx, 
+            close_send_rx
+        ));
+        dtls_conn.send_handle = Some(handle);
+
+        Ok(())
+    }
+
+    async fn send_loop(
+        conn_idx: ConnIndex,
+        conn: Arc<dyn Conn + Sync + Send>,
+        mut send_rx: TokioRx<Bytes>,
+        mut close_send_rx: TokioRx<DtlsServerClose>
+    ) -> anyhow::Result<()> {
+        loop {
+            select! {
+                biased;
+
+                Some(msg) = send_rx.recv() => {
+                    conn.send(&msg).await?;
+                }
+                Some(_) = close_send_rx.recv() => break,
+                else => {
+                    warn!("close send tx: {} is closed before rx is closed", conn_idx.0);
+                    break;
+                }
+            }
+        }
+
+        conn.close().await?;
+        debug!("dtls server send loop: {} is closed", conn_idx.0);
+        Ok(())
+    }
+
+    fn health_check_send(&mut self)
+    -> Vec<(usize, anyhow::Result<()>)> {
+        let finished = {
+            let mut v = vec![];
+            let mut w = self.conn_map.write()
+            .unwrap();
+            for (idx, dtls_conn) in w.iter_mut() {
+                let Some(ref handle_ref) = dtls_conn.send_handle else {
+                    continue;
+                };
+                
+                if !handle_ref.is_finished() {
+                    continue;
+                }
+
+                let handle = dtls_conn.send_handle.take()
                 .unwrap();
                 v.push((*idx, handle));
             }
