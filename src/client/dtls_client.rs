@@ -128,6 +128,7 @@ impl DtlsClient {
             Self::connect(config)
         ))??;
         self.conn = Some(conn);
+        debug!("dtls client has connected");
         Ok(())
     }
 
@@ -135,7 +136,7 @@ impl DtlsClient {
     -> anyhow::Result<Arc<impl Conn + Sync + Send>> {
         let socket = TokioUdpSocket::bind(config.client_addr).await?;
         socket.connect(config.server_addr).await?;
-        debug!("dtls client connecting to {}", config.server_addr);
+        debug!("connecting to {}", config.server_addr);
 
         let certificate = Certificate::generate_self_signed(vec![
             config.server_name.to_string()
@@ -153,7 +154,6 @@ impl DtlsClient {
             None
         ).await?;
 
-        debug!("connected");
         Ok(Arc::new(dtls_conn))
     }
 
@@ -174,6 +174,7 @@ impl DtlsClient {
         );
         self.send_handle = Some(handle);
 
+        debug!("send loop has started");
         Ok(())
     }
 
@@ -250,6 +251,7 @@ impl DtlsClient {
         ));
         self.recv_handle = Some(handle);
 
+        debug!("recv loop has started");
         Ok(())
     }
 

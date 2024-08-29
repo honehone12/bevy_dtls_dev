@@ -262,6 +262,7 @@ impl DtlsServer {
         );
         
         self.acpt_handle = Some(handle);
+        debug!("acpt loop is started");
         Ok(())
     }
 
@@ -357,6 +358,7 @@ impl DtlsServer {
         ));
         dtls_conn.recv_handle = Some(handle);
         
+        debug!("recv loop: {} has started", conn_idx.0);
         Ok(())
     }
 
@@ -450,6 +452,7 @@ impl DtlsServer {
         ));
         dtls_conn.send_handle = Some(handle);
 
+        debug!("send loop: {} has started", conn_idx.0);
         Ok(())
     }
 

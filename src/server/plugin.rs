@@ -6,10 +6,11 @@ fn accept_system(mut dtls_server: ResMut<DtlsServer>) {
         return;
     };
 
-    debug!("starting conn: {}", acpted.0);
     if let Err(e) = dtls_server.start_conn(acpted) {
         panic!("{e}");
     }
+
+    debug!("conn: {} has been started from system", acpted.0);
 }
 
 pub struct DtlsServerPlugin {
