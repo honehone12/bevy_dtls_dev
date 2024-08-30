@@ -110,6 +110,11 @@ impl DtlsServer {
         })
     }
 
+    pub fn clients_len(&self) -> usize {
+        let r = self.conn_map.read().unwrap();
+        r.len()
+    }
+
     pub fn start(&mut self, config: DtlsServerConfig)
     -> anyhow::Result<()> {
         self.start_listen(config)?;
@@ -154,6 +159,25 @@ impl DtlsServer {
         Ok(())
     }
 
+    pub fn broadcast(&self, message: Bytes) -> anyhow::Result<()> {
+        let r = self.conn_map.read()
+        .unwrap();
+
+        for (idx, ref dtls_conn) in r.iter() {
+            let Some(ref send_tx) = dtls_conn.send_tx else {
+                warn!("send tx: {idx} is None");
+                continue;
+            };
+    
+            if let Err(e) = send_tx.send(message.clone()) {
+                warn!("conn: {idx} is not started or disconnected: {e}");
+                continue;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn recv(&mut self) -> Option<(ConnIndex, Bytes)> {
         let Some(ref mut recv_rx) = self.recv_rx else {
             return None;
@@ -184,6 +208,7 @@ impl DtlsServer {
         let Some(dtls_conn) = w.remove(&conn_index) else {
             return;
         };
+        
         if let Some(close_recv_tx) = dtls_conn.close_recv_tx {
             if let Err(e) = close_recv_tx.send(DtlsServerClose) {
                 error!("close recv tx: {conn_index} is closed before set to None: {e}");

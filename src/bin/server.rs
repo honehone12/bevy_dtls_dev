@@ -17,12 +17,20 @@ fn send_hellooon_system(
     dtls_server: Res<DtlsServer>, 
     mut counter: ResMut<ServerHellooonCounter>
 ) {
+    if dtls_server.clients_len() == 0 {
+        return;
+    }
+
     let str = format!("from server helloooooon {}", counter.0);
     let msg = Bytes::from(str);
-    match dtls_server.send(0, msg) {
+    match dtls_server.broadcast(msg) {
         Ok(_) => counter.0 += 1, 
         Err(e) => error!("{e}")
     }
+
+    // if counter.0 > 10 {
+    //     dtls_server.close_all();
+    // }
 }
 
 fn recv_hellooon_system(mut dtls_server: ResMut<DtlsServer>) {
