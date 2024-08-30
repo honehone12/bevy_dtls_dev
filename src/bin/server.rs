@@ -5,7 +5,7 @@ use bevy::{
     prelude::*
 };
 use bevy_dtls_dev::server::{
-    dtls_server::DtlsServer,
+    dtls_server::{DtlsServer, DtlsServerConfig},
     plugin::DtlsServerPlugin
 };
 use bytes::Bytes;
@@ -57,6 +57,24 @@ fn health_check_system(mut dtls_server: ResMut<DtlsServer>) {
     }
 }
 
+struct SereverPlugin {
+    pub listen_addr: &'static str,
+    pub server_name: &'static str,
+}
+
+impl Plugin for SereverPlugin {
+    fn build(&self, app: &mut App) {
+        let mut dtls_server = app.world_mut()
+        .resource_mut::<DtlsServer>();
+        if let Err(e) = dtls_server.start(DtlsServerConfig{
+            listen_addr: self.listen_addr,
+            server_names: vec![self.server_name.to_string()]
+        }) {
+            panic!("{e}");
+        }
+    }
+}
+
 fn main() {
     App::new()
     .add_plugins((
@@ -68,11 +86,13 @@ fn main() {
             ..default()
         },
         DtlsServerPlugin{
-            listen_addr: "127.0.0.1:4443",
-            server_name: "localhost",
             buf_size: 512
         }
     ))
+    .add_plugins(SereverPlugin{
+        listen_addr: "127.0.0.1:4443",
+        server_name: "localhost"
+    })
     .insert_resource(ServerHellooonCounter(0))
     .add_systems(Update, (
         send_hellooon_system,

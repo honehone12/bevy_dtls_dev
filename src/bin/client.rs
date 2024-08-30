@@ -93,6 +93,26 @@ fn health_check_system(mut dtls_client: ResMut<DtlsClient>) {
     }
 }
 
+struct ClientPlugin {
+    pub server_addr: &'static str,
+    pub client_addr: &'static str,
+    pub server_name: &'static str,
+}
+
+impl Plugin for ClientPlugin {
+    fn build(&self, app: &mut App) {
+        let mut dtls_client = app.world_mut()
+        .resource_mut::<DtlsClient>();
+        if let Err(e) = dtls_client.start(DtlsClientConfig{ 
+            server_addr: self.server_addr, 
+            client_addr: self.client_addr, 
+            server_name: self.server_name 
+        }) {
+            panic!("{e}")
+        }
+    }
+}
+
 fn main() {
     App::new()
     .add_plugins((
@@ -100,12 +120,16 @@ fn main() {
             level: Level::DEBUG,
             ..default()
         }),
-        ClientGraphicsPlugin,
         DtlsClientPlugin{
+            buf_size: 512
+        }
+    ))
+    .add_plugins((
+        ClientGraphicsPlugin,
+        ClientPlugin{
             server_addr: "127.0.0.1:4443",
             client_addr: "127.0.0.1:0",
-            server_name: "localhost",
-            buf_size: 512
+            server_name: "localhost"
         }
     ))
     .insert_resource(ClientHellooonCounter(0))
