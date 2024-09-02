@@ -1,4 +1,8 @@
+pub mod cert {
+    pub mod loader;
+}
 pub mod server {
+    pub mod cert_option;
     pub mod dtls_server;
     pub mod plugin;
 }

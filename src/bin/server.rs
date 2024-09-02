@@ -5,8 +5,7 @@ use bevy::{
     prelude::*
 };
 use bevy_dtls_dev::server::{
-    dtls_server::{DtlsServer, DtlsServerConfig},
-    plugin::DtlsServerPlugin
+    cert_option::ServerCertOption, dtls_server::{DtlsServer, DtlsServerConfig}, plugin::DtlsServerPlugin
 };
 use bytes::Bytes;
 
@@ -59,7 +58,7 @@ fn health_check_system(mut dtls_server: ResMut<DtlsServer>) {
 
 struct SereverPlugin {
     pub listen_addr: &'static str,
-    pub server_name: &'static str,
+    pub cert_option: ServerCertOption
 }
 
 impl Plugin for SereverPlugin {
@@ -68,7 +67,7 @@ impl Plugin for SereverPlugin {
         .resource_mut::<DtlsServer>();
         if let Err(e) = dtls_server.start(DtlsServerConfig{
             listen_addr: self.listen_addr,
-            server_names: vec![self.server_name.to_string()]
+            cert_option: self.cert_option.clone()
         }) {
             panic!("{e}");
         }
@@ -91,7 +90,13 @@ fn main() {
     ))
     .add_plugins(SereverPlugin{
         listen_addr: "127.0.0.1:4443",
-        server_name: "localhost"
+        // cert_option: ServerCertOption::GenerateSelfSigned { 
+        //     subject_alt_name: "webrtc.rs".to_string() 
+        // }
+        cert_option: ServerCertOption::Load { 
+            priv_key_path: "my_certificates/server.priv.pem".into(), 
+            certificate_path: "my_certificates/server.pub.pem".into() 
+        }
     })
     .insert_resource(ServerHellooonCounter(0))
     .add_systems(Update, (

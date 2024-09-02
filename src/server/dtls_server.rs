@@ -18,12 +18,11 @@ use tokio::{
     }, 
     task::JoinHandle
 };
-use webrtc_dtls::{
-    config::{Config, ExtendedMasterSecretType}, 
-    crypto::Certificate, listener,
-};
+use webrtc_dtls::listener;
 use webrtc_util::conn::{Listener, Conn};
 use bytes::{Bytes, BytesMut};
+
+use super::cert_option::ServerCertOption;
 
 #[derive(Clone, Copy)]
 pub struct ConnIndex(pub(crate) usize);
@@ -36,7 +35,7 @@ impl ConnIndex {
 
 pub struct DtlsServerConfig {
     pub listen_addr: &'static str,
-    pub server_names: Vec<String>
+    pub cert_option: ServerCertOption
 }
 
 struct DtlsServerClose;
@@ -251,14 +250,9 @@ impl DtlsServer {
 
     async fn listen(config: DtlsServerConfig)
     -> anyhow::Result<Arc<dyn Listener + Sync + Send>> {
-        let cert = Certificate::generate_self_signed(config.server_names)?;
         let listener = listener::listen(
             config.listen_addr, 
-            Config{
-                certificates: vec![cert],
-                extended_master_secret: ExtendedMasterSecretType::Require,
-                ..default()
-            }
+            config.cert_option.to_dtls_config()?
         ).await?;
 
         debug!("dtls server listening at {}", config.listen_addr);
