@@ -1,3 +1,5 @@
+use std::net::{IpAddr, Ipv4Addr};
+
 use bevy::{
     log::{Level, LogPlugin}, 
     prelude::*
@@ -93,8 +95,10 @@ fn health_check_system(mut dtls_client: ResMut<DtlsClient>) {
 }
 
 struct ClientPlugin {
-    pub server_addr: &'static str,
-    pub client_addr: &'static str,
+    pub server_addr: IpAddr,
+    pub server_port: u16,
+    pub client_addr: IpAddr,
+    pub client_port: u16,
     pub cert_option: ClientCertOption
 }
 
@@ -105,7 +109,9 @@ impl Plugin for ClientPlugin {
     
         if let Err(e) = dtls_client.start(DtlsClientConfig{ 
             server_addr: self.server_addr, 
+            server_port: self.server_port,
             client_addr: self.client_addr, 
+            client_port: self.client_port,
             cert_option: self.cert_option.clone()
         }) {
             panic!("{e}")
@@ -117,7 +123,7 @@ fn main() {
     App::new()
     .add_plugins((
         DefaultPlugins.set(LogPlugin{
-            level: Level::DEBUG,
+            level: Level::INFO,
             ..default()
         }),
         DtlsClientPlugin{
@@ -127,8 +133,10 @@ fn main() {
     .add_plugins((
         ClientGraphicsPlugin,
         ClientPlugin{
-            server_addr: "127.0.0.1:4443",
-            client_addr: "127.0.0.1:0",
+            server_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            server_port: 4443,
+            client_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            client_port: 0,
             // cert_option: ClientCertOption::GenerateSelfSigned { 
             //     subject_alt_name: "webrtc.rs" 
             // }

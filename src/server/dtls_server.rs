@@ -1,6 +1,5 @@
 use std::{
-    collections::HashMap, 
-    sync::{Arc, RwLock as StdRwLock}
+    collections::HashMap, net::IpAddr, sync::{Arc, RwLock as StdRwLock}
 };
 use anyhow::{anyhow, bail};
 use bevy::{
@@ -33,7 +32,8 @@ impl ConnIndex {
 }
 
 pub struct DtlsServerConfig {
-    pub listen_addr: &'static str,
+    pub listen_addr: IpAddr,
+    pub listen_port: u16,
     pub cert_option: ServerCertOption
 }
 
@@ -250,7 +250,7 @@ impl DtlsServer {
     async fn listen(config: DtlsServerConfig)
     -> anyhow::Result<Arc<dyn Listener + Sync + Send>> {
         let listener = listener::listen(
-            config.listen_addr, 
+            (config.listen_addr, config.listen_port), 
             config.cert_option.to_dtls_config()?
         ).await?;
 

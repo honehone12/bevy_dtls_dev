@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc};
 use anyhow::{anyhow, bail};
 use bevy::{
     prelude::*, 
@@ -22,8 +22,10 @@ use webrtc_util::Conn;
 use super::cert_option::ClientCertOption;
 
 pub struct DtlsClientConfig {
-    pub server_addr: &'static str,
-    pub client_addr: &'static str,
+    pub server_addr: IpAddr,
+    pub server_port: u16,
+    pub client_addr: IpAddr,
+    pub client_port: u16,
     pub cert_option: ClientCertOption
 }
 
@@ -131,8 +133,12 @@ impl DtlsClient {
 
     async fn connect(config: DtlsClientConfig) 
     -> anyhow::Result<Arc<impl Conn + Sync + Send>> {
-        let socket = TokioUdpSocket::bind(config.client_addr).await?;
-        socket.connect(config.server_addr).await?;
+        let socket = TokioUdpSocket::bind(
+            (config.client_addr, config.client_port)
+        ).await?;
+        socket.connect(
+            (config.server_addr, config.server_port)
+        ).await?;
         debug!("connecting to {}", config.server_addr);
 
         let dtls_conn = DTLSConn::new(
