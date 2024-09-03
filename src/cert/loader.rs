@@ -7,13 +7,7 @@ use rcgen::KeyPair;
 use rustls::pki_types::CertificateDer;
 use webrtc_dtls::crypto::{Certificate, CryptoPrivateKey};
 
-pub struct CertificateLoader {
-    pub priv_key_path: PathBuf,
-    pub certificate_path: PathBuf
-}
-
-impl CertificateLoader {
-    pub fn load_key(path: PathBuf) 
+    pub(crate) fn load_key(path: PathBuf) 
     -> anyhow::Result<CryptoPrivateKey> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
@@ -27,7 +21,7 @@ impl CertificateLoader {
         Ok(priv_key)
     } 
 
-    pub fn load_certtificate(path: PathBuf)
+    pub(crate) fn load_certtificate(path: PathBuf)
     -> anyhow::Result<Vec<CertificateDer<'static>>> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
@@ -37,14 +31,15 @@ impl CertificateLoader {
         Ok(cert)
     }
 
-    pub fn load_key_and_certificate(self) 
-    -> anyhow::Result<Certificate> {
-        let private_key = Self::load_key(self.priv_key_path)?;
-        let certificate = Self::load_certtificate(self.certificate_path)?;
+    pub(crate) fn load_key_and_certificate(
+        priv_key_path: PathBuf,
+        certificate_path: PathBuf
+    ) -> anyhow::Result<Certificate> {
+        let private_key = load_key(priv_key_path)?;
+        let certificate = load_certtificate(certificate_path)?;
 
         Ok(Certificate{
             certificate,
             private_key
         })
     }
-}

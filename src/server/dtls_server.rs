@@ -21,7 +21,6 @@ use tokio::{
 use webrtc_dtls::listener;
 use webrtc_util::conn::{Listener, Conn};
 use bytes::{Bytes, BytesMut};
-
 use super::cert_option::ServerCertOption;
 
 #[derive(Clone, Copy)]

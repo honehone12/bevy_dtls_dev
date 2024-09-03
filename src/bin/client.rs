@@ -4,8 +4,7 @@ use bevy::{
 };
 use bytes::Bytes;
 use bevy_dtls_dev::client::{
-    dtls_client::*, 
-    plugin::DtlsClientPlugin
+    cert_option::ClientCertOption, dtls_client::*, plugin::DtlsClientPlugin
 };
 
 #[derive(Component)]
@@ -96,17 +95,18 @@ fn health_check_system(mut dtls_client: ResMut<DtlsClient>) {
 struct ClientPlugin {
     pub server_addr: &'static str,
     pub client_addr: &'static str,
-    pub server_name: &'static str,
+    pub cert_option: ClientCertOption
 }
 
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
         let mut dtls_client = app.world_mut()
         .resource_mut::<DtlsClient>();
+    
         if let Err(e) = dtls_client.start(DtlsClientConfig{ 
             server_addr: self.server_addr, 
             client_addr: self.client_addr, 
-            server_name: self.server_name 
+            cert_option: self.cert_option.clone()
         }) {
             panic!("{e}")
         }
@@ -129,7 +129,15 @@ fn main() {
         ClientPlugin{
             server_addr: "127.0.0.1:4443",
             client_addr: "127.0.0.1:0",
-            server_name: "localhost"
+            // cert_option: ClientCertOption::GenerateSelfSigned { 
+            //     subject_alt_name: "webrtc.rs" 
+            // }
+            cert_option: ClientCertOption::Load { 
+                subject_alt_name: "webrtc.rs", 
+                priv_key_path: "my_certificates/client.priv.pem", 
+                certificate_path: "my_certificates/client.pub.pem",
+                root_ca_path: "my_certificates/server.pub.pem" 
+            }
         }
     ))
     .insert_resource(ClientHellooonCounter(0))

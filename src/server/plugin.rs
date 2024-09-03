@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use rustls::crypto::aws_lc_rs;
 use super::dtls_server::*;
 
 fn accept_system(mut dtls_server: ResMut<DtlsServer>) {
@@ -19,6 +20,12 @@ pub struct DtlsServerPlugin {
 
 impl Plugin for DtlsServerPlugin {
     fn build(&self, app: &mut App) {
+        if aws_lc_rs::default_provider()
+        .install_default()
+        .is_err() {
+            panic!("failed to setup crypto provider")
+        }
+
         let dtls_server = match DtlsServer::new(self.buf_size) {
             Ok(s) => s,
             Err(e) => panic!("{e}")

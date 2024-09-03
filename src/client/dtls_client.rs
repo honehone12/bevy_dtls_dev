@@ -17,17 +17,14 @@ use tokio::{
     }, 
     task::JoinHandle,
 };
-use webrtc_dtls::{
-    config::{Config, ExtendedMasterSecretType}, 
-    conn::DTLSConn, 
-    crypto::Certificate
-};
+use webrtc_dtls::conn::DTLSConn;
 use webrtc_util::Conn;
+use super::cert_option::ClientCertOption;
 
 pub struct DtlsClientConfig {
     pub server_addr: &'static str,
     pub client_addr: &'static str,
-    pub server_name: &'static str
+    pub cert_option: ClientCertOption
 }
 
 pub struct DtlsClientHealth {
@@ -138,18 +135,9 @@ impl DtlsClient {
         socket.connect(config.server_addr).await?;
         debug!("connecting to {}", config.server_addr);
 
-        let certificate = Certificate::generate_self_signed(vec![
-            config.server_name.to_string()
-        ])?;
         let dtls_conn = DTLSConn::new(
             Arc::new(socket), 
-            Config{
-                certificates: vec![certificate],
-                insecure_skip_verify: true,
-                extended_master_secret: ExtendedMasterSecretType::Require,
-                server_name: config.server_name.to_string(),
-                ..default()
-            }, 
+            config.cert_option.to_dtls_config()?, 
             true, 
             None
         ).await?;

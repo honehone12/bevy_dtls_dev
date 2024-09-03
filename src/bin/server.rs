@@ -65,6 +65,7 @@ impl Plugin for SereverPlugin {
     fn build(&self, app: &mut App) {
         let mut dtls_server = app.world_mut()
         .resource_mut::<DtlsServer>();
+
         if let Err(e) = dtls_server.start(DtlsServerConfig{
             listen_addr: self.listen_addr,
             cert_option: self.cert_option.clone()
@@ -91,11 +92,12 @@ fn main() {
     .add_plugins(SereverPlugin{
         listen_addr: "127.0.0.1:4443",
         // cert_option: ServerCertOption::GenerateSelfSigned { 
-        //     subject_alt_name: "webrtc.rs".to_string() 
+        //     subject_alt_name: "webrtc.rs"
         // }
         cert_option: ServerCertOption::Load { 
-            priv_key_path: "my_certificates/server.priv.pem".into(), 
-            certificate_path: "my_certificates/server.pub.pem".into() 
+            priv_key_path: "my_certificates/server.priv.pem", 
+            certificate_path: "my_certificates/server.pub.pem",
+            client_ca_path: "my_certificates/server.pub.pem" 
         }
     })
     .insert_resource(ServerHellooonCounter(0))
