@@ -16,7 +16,7 @@ use tokio::{
         UnboundedSender as TokioTx
     }, 
     task::JoinHandle,
-    time::timeout
+    time::{timeout, sleep}
 };
 use webrtc_dtls::listener;
 use webrtc_util::conn::{Listener, Conn};
@@ -84,13 +84,17 @@ pub struct DtlsServer {
     send_timeout: u64,
 
     recv_buf_size: usize,
+    recv_timeout: Option<u64>,
     recv_tx: Option<TokioTx<(ConnIndex, Bytes)>>,
     recv_rx: Option<TokioRx<(ConnIndex, Bytes)>>,
 }
 
 impl DtlsServer {
-    pub fn new(recv_buf_size: usize, send_timeout: u64) 
-    -> anyhow::Result<Self> {
+    pub fn new(
+        recv_buf_size: usize, 
+        send_timeout: u64,
+        recv_timeout: Option<u64>
+    ) -> anyhow::Result<Self> {
         let rt = runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -107,6 +111,7 @@ impl DtlsServer {
 
             send_timeout,
 
+            recv_timeout,
             recv_buf_size,
             recv_tx: None,
             recv_rx: None,
@@ -376,6 +381,7 @@ impl DtlsServer {
             conn_idx,
             self.recv_buf_size,
             conn,
+            self.recv_timeout,
             recv_tx,
             close_recv_rx
         ));
@@ -389,17 +395,24 @@ impl DtlsServer {
         conn_idx: ConnIndex,
         buf_size: usize,
         conn: Arc<dyn Conn + Sync + Send>,
+        timeout_secs: Option<u64>,
         recv_tx: TokioTx<(ConnIndex, Bytes)>, 
         mut close_recv_rx: TokioRx<DtlsServerClose>
     ) -> anyhow::Result<()> {
         let mut buf = BytesMut::zeroed(buf_size);
 
         loop {
+            let timeout_dur = match timeout_secs {
+                Some(t) => Duration::from_secs(t),
+                None => Duration::MAX
+            };
+
             let (n, addr) = select! {
                 biased;
 
                 result = conn.recv_from(&mut buf) => result?,
                 Some(_) = close_recv_rx.recv() => break,
+                () = sleep(timeout_dur) => bail!("conn: {} recv timeout", conn_idx.0),
                 else => {
                     error!("close recv tx: {} is closed before rx is closed", conn_idx.0);
                     break;

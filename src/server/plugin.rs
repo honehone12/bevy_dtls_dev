@@ -16,7 +16,8 @@ fn accept_system(mut dtls_server: ResMut<DtlsServer>) {
 
 pub struct DtlsServerPlugin {
     pub buf_size: usize,
-    pub timeout: u64
+    pub send_timeout: u64,
+    pub recv_timeout: Option<u64>
 }
 
 impl Plugin for DtlsServerPlugin {
@@ -27,7 +28,11 @@ impl Plugin for DtlsServerPlugin {
             panic!("failed to setup crypto provider")
         }
 
-        let dtls_server = match DtlsServer::new(self.buf_size, self.timeout) {
+        let dtls_server = match DtlsServer::new(
+            self.buf_size, 
+            self.send_timeout,
+            self.recv_timeout
+        ) {
             Ok(s) => s,
             Err(e) => panic!("{e}")
         };
