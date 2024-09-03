@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap, net::IpAddr, sync::{Arc, RwLock as StdRwLock}
+    collections::HashMap, net::IpAddr, sync::{Arc, RwLock as StdRwLock}, time::Duration
 };
 use anyhow::{anyhow, bail};
 use bevy::{
@@ -15,7 +15,8 @@ use tokio::{
         UnboundedReceiver as TokioRx, 
         UnboundedSender as TokioTx
     }, 
-    task::JoinHandle
+    task::JoinHandle,
+    time::timeout
 };
 use webrtc_dtls::listener;
 use webrtc_util::conn::{Listener, Conn};
@@ -80,13 +81,15 @@ pub struct DtlsServer {
     
     conn_map: Arc<StdRwLock<HashMap<usize, DtlsConn>>>,
 
+    send_timeout: u64,
+
     recv_buf_size: usize,
     recv_tx: Option<TokioTx<(ConnIndex, Bytes)>>,
     recv_rx: Option<TokioRx<(ConnIndex, Bytes)>>,
 }
 
 impl DtlsServer {
-    pub fn new(recv_buf_size: usize) 
+    pub fn new(recv_buf_size: usize, send_timeout: u64) 
     -> anyhow::Result<Self> {
         let rt = runtime::Builder::new_multi_thread()
         .enable_all()
@@ -101,6 +104,8 @@ impl DtlsServer {
             close_acpt_tx: None,
             
             conn_map: default(),
+
+            send_timeout,
 
             recv_buf_size,
             recv_tx: None,
@@ -464,7 +469,8 @@ impl DtlsServer {
 
         let handle = self.runtime.spawn(Self::send_loop(
             conn_idx, 
-            conn, 
+            conn,
+            self.send_timeout, 
             send_rx, 
             close_send_rx
         ));
@@ -477,6 +483,7 @@ impl DtlsServer {
     async fn send_loop(
         conn_idx: ConnIndex,
         conn: Arc<dyn Conn + Sync + Send>,
+        timeout_secs: u64,
         mut send_rx: TokioRx<Bytes>,
         mut close_send_rx: TokioRx<DtlsServerClose>
     ) -> anyhow::Result<()> {
@@ -485,7 +492,10 @@ impl DtlsServer {
                 biased;
 
                 Some(msg) = send_rx.recv() => {
-                    conn.send(&msg).await?;
+                    timeout(
+                        Duration::from_secs(timeout_secs),
+                        conn.send(&msg)
+                    ).await??;
                 }
                 Some(_) = close_send_rx.recv() => break,
                 else => {

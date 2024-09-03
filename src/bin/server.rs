@@ -88,7 +88,8 @@ fn main() {
             ..default()
         },
         DtlsServerPlugin{
-            buf_size: 512
+            buf_size: 512,
+            timeout: 10
         }
     ))
     .add_plugins(SereverPlugin{

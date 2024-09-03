@@ -3,6 +3,7 @@ use rustls::crypto::aws_lc_rs;
 use super::dtls_client::*;
 
 pub struct DtlsClientPlugin {
+    pub timeout: u64,
     pub buf_size: usize
 }
 
@@ -14,7 +15,7 @@ impl Plugin for DtlsClientPlugin {
             panic!("failed to set up crypto provider");
         }
 
-        let dtls_client = match DtlsClient::new(self.buf_size) {
+        let dtls_client = match DtlsClient::new(self.buf_size, self.timeout) {
             Ok(c) => c,
             Err(e) => panic!("{e}")
         };

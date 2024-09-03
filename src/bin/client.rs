@@ -1,5 +1,4 @@
 use std::net::{IpAddr, Ipv4Addr};
-
 use bevy::{
     log::{Level, LogPlugin}, 
     prelude::*
@@ -127,7 +126,8 @@ fn main() {
             ..default()
         }),
         DtlsClientPlugin{
-            buf_size: 512
+            buf_size: 512,
+            timeout: 10
         }
     ))
     .add_plugins((
